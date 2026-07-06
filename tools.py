@@ -6,8 +6,6 @@ import subprocess
 import os
 import config
 
-# Format OpenAI function-calling (dipakai Groq & OpenAI-compatible).
-# Untuk Claude, di-convert otomatis di providers.py.
 TOOLS_SCHEMA = [
     {
         "type": "function",
@@ -79,6 +77,20 @@ TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
+            "name": "fetch_url",
+            "description": "Ambil isi halaman web (scraping) dan ekstrak teksnya (bukan HTML mentah). Buat baca artikel, dokumentasi API, harga, dll dari internet.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "URL lengkap termasuk https://"}
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "task_done",
             "description": "Panggil ini SEKALI saja saat task sudah selesai sepenuhnya, untuk mengakhiri loop dan kasih laporan ke user.",
             "parameters": {
@@ -92,7 +104,6 @@ TOOLS_SCHEMA = [
     },
 ]
 
-# Tool yang butuh konfirmasi kalau mode='confirm'
 RISKY_TOOLS = {"bash_exec", "install_package", "write_file"}
 
 
@@ -101,6 +112,24 @@ def _safe_path(rel_path: str) -> str:
     if not full.startswith(os.path.abspath(config.WORKSPACE_DIR)):
         raise ValueError("Path di luar workspace, ditolak demi keamanan.")
     return full
+
+
+def fetch_url(url: str) -> str:
+    try:
+        import requests
+        from bs4 import BeautifulSoup
+
+        resp = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0 (SOVEREIGN Agent)"})
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for tag in soup(["script", "style", "nav", "footer", "header"]):
+            tag.decompose()
+        text = " ".join(soup.get_text(separator=" ", strip=True).split())
+        return text[:6000]
+    except ImportError:
+        return "[error] library 'beautifulsoup4' belum terpasang. Jalanin: pip install beautifulsoup4 --break-system-packages"
+    except Exception as e:
+        return f"[error] gagal fetch url: {e}"
 
 
 def bash_exec(command: str) -> str:
@@ -168,4 +197,5 @@ DISPATCH = {
     "write_file": lambda args: write_file(args["path"], args["content"]),
     "read_file": lambda args: read_file(args["path"]),
     "list_dir": lambda args: list_dir(args.get("path", ".")),
+    "fetch_url": lambda args: fetch_url(args["url"]),
 }

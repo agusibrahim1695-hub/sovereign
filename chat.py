@@ -77,6 +77,65 @@ def make_notify(agent, label="SOVEREIGN"):
     return _notify
 
 
+def check_sync_status():
+    import subprocess
+
+    lines = []
+    if not config.GITHUB_TOKEN or not config.GITHUB_REPO:
+        lines.append(f"{RED}✗ GITHUB_TOKEN/GITHUB_REPO belum diisi di .env{RESET}")
+        return "\n".join(lines)
+
+    lines.append(f"{GREEN}✓ Config .env: repo = {config.GITHUB_REPO}{RESET}")
+
+    r = subprocess.run(["git", "remote", "-v"], cwd=sync.REPO_DIR, capture_output=True, text=True)
+    if "origin" in r.stdout:
+        lines.append(f"{GREEN}✓ Remote 'origin' terpasang{RESET}")
+    else:
+        lines.append(f"{RED}✗ Remote 'origin' belum ada{RESET}")
+        return "\n".join(lines)
+
+    r = subprocess.run(["git", "log", "-1", "--format=%h %s (%cr)"], cwd=sync.REPO_DIR, capture_output=True, text=True)
+    last_commit = r.stdout.strip()
+    lines.append(f"{DIM}Commit terakhir lokal: {last_commit}{RESET}")
+
+    r = subprocess.run(
+        ["git", "ls-remote", "origin", f"refs/heads/{config.GITHUB_BRANCH}"],
+        cwd=sync.REPO_DIR, capture_output=True, text=True, timeout=15,
+    )
+    if r.returncode != 0 or not r.stdout.strip():
+        lines.append(f"{RED}✗ Gagal konek ke GitHub (cek internet/token): {r.stderr.strip()[:200]}{RESET}")
+        return "\n".join(lines)
+
+    remote_hash = r.stdout.split()[0]
+    local_hash_r = subprocess.run(["git", "rev-parse", "HEAD"], cwd=sync.REPO_DIR, capture_output=True, text=True)
+    local_hash = local_hash_r.stdout.strip()
+
+    if remote_hash == local_hash:
+        lines.append(f"{GREEN}✓ TERHUBUNG & SINKRON — lokal dan GitHub sama persis{RESET}")
+    else:
+        lines.append(f"{YELLOW}⚠ Terhubung, tapi ada beda antara lokal dan GitHub (belum sync penuh){RESET}")
+
+    return "\n".join(lines)
+
+
+def get_clipboard():
+    import subprocess
+    try:
+        r = subprocess.run(["termux-clipboard-get"], capture_output=True, text=True, timeout=5)
+        return r.stdout
+    except Exception:
+        return None
+
+
+def set_clipboard(text):
+    import subprocess
+    try:
+        subprocess.run(["termux-clipboard-set"], input=text, text=True, timeout=5)
+        return True
+    except Exception:
+        return False
+
+
 def ask_confirm_cli(name, args):
     print(f"\n⚠️  AI mau jalanin tool RISKY: {name}({args})")
     ans = input("Izinkan? [y/n]: ").strip().lower()
@@ -121,6 +180,9 @@ Command:
   /save <nama>         -> simpan sesi sekarang sebagai proyek bernama <nama>
   /load <nama>         -> buka proyek <nama> (history-nya kesambung lagi)
   /sessions            -> lihat daftar proyek yang pernah disimpan
+  /syncstatus          -> cek pasti apa sudah terhubung & sinkron ke GitHub
+  /paste               -> ambil isi clipboard HP dan kirim sebagai pesan
+  /copylast            -> salin balesan terakhir AI ke clipboard HP
   /provider <nama>     -> ganti provider: groq / claude / openai / mimo
   /mode auto|confirm   -> ganti mode eksekusi tool
   /exit                -> keluar (obrolan otomatis kesimpen, lanjut lagi pas dibuka ulang)
@@ -199,6 +261,39 @@ def main():
         if user_input == "/sessions":
             sess = list_sessions()
             print("Proyek tersimpan:\n  " + ("\n  ".join(sess) if sess else "(belum ada)") + "\n")
+            continue
+
+        if user_input == "/syncstatus":
+            print("\n" + check_sync_status() + "\n")
+            continue
+
+        if user_input == "/paste":
+            clip = get_clipboard()
+            if clip is None:
+                print(f"{RED}[error] termux-api belum siap. Pastiin app Termux:API terinstall & pkg termux-api terpasang.{RESET}")
+                continue
+            if not clip.strip():
+                print(f"{YELLOW}[clipboard kosong]{RESET}")
+                continue
+            preview = clip[:300] + ("..." if len(clip) > 300 else "")
+            print(f"{DIM}[clipboard]: {preview}{RESET}")
+            confirm = input("Kirim ini sebagai pesan? [y/n]: ").strip().lower()
+            if confirm == "y":
+                agent.chat(clip)
+                save_session(LAST_SESSION, agent)
+            continue
+
+        if user_input == "/copylast":
+            last_text = next(
+                (m["content"] for m in reversed(agent.messages) if m["role"] == "assistant" and m.get("content")),
+                None,
+            )
+            if not last_text:
+                print(f"{YELLOW}[belum ada balesan AI buat disalin]{RESET}")
+            elif set_clipboard(last_text):
+                print(f"{GREEN}[disalin ke clipboard, tinggal paste ke app lain]{RESET}")
+            else:
+                print(f"{RED}[error] gagal nyalin, cek termux-api{RESET}")
             continue
 
         if user_input.startswith("/save"):

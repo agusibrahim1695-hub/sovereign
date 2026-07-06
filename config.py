@@ -1,0 +1,53 @@
+"""
+Config loader ringan — baca .env manual (no dotenv dependency, biar aman di Termux).
+Taro API key di file .env sebelah main.py:
+
+GROQ_API_KEY=xxx
+ANTHROPIC_API_KEY=xxx
+OPENAI_API_KEY=xxx
+OPENAI_BASE_URL=https://api.openai.com/v1
+TELEGRAM_BOT_TOKEN=xxx
+TELEGRAM_ALLOWED_CHAT_ID=123456789
+DEFAULT_PROVIDER=groq
+"""
+import os
+
+ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+
+
+def _load_env():
+    if not os.path.exists(ENV_PATH):
+        return
+    with open(ENV_PATH, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip())
+
+
+_load_env()
+
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_ALLOWED_CHAT_ID = os.environ.get("TELEGRAM_ALLOWED_CHAT_ID", "")
+DEFAULT_PROVIDER = os.environ.get("DEFAULT_PROVIDER", "groq")
+WORKSPACE_DIR = os.environ.get(
+    "WORKSPACE_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace")
+)
+MAX_ITERS = int(os.environ.get("MAX_ITERS", "25"))
+BASH_TIMEOUT = int(os.environ.get("BASH_TIMEOUT", "120"))
+
+os.makedirs(WORKSPACE_DIR, exist_ok=True)
+
+MIMO_API_KEY = __import__("os").environ.get("MIMO_API_KEY", "")
+MIMO_BASE_URL = __import__("os").environ.get("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1")
+MIMO_MODEL = __import__("os").environ.get("MIMO_MODEL", "mimo")
+
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "")
+GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "main")

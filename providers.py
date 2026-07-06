@@ -19,6 +19,15 @@ class BaseProvider:
         raise NotImplementedError
 
 
+CONTEXT_WINDOWS = {
+    "llama-3.3-70b-versatile": 128_000,
+    "claude-sonnet-4-6": 200_000,
+    "gpt-4o-mini": 128_000,
+    "mimo-v2.5": 128_000,
+    "mimo": 128_000,
+}
+
+
 class OpenAICompatProvider(BaseProvider):
     """Dipakai untuk Groq, OpenAI asli, atau LLM lokal/openrouter yang OpenAI-compatible."""
 
@@ -26,6 +35,7 @@ class OpenAICompatProvider(BaseProvider):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self.context_window = CONTEXT_WINDOWS.get(model, 128_000)
 
     def chat(self, messages, tools):
         resp = requests.post(
@@ -55,7 +65,18 @@ class OpenAICompatProvider(BaseProvider):
                     "arguments": json.loads(tc["function"]["arguments"] or "{}"),
                 }
             )
-        return {"content": msg.get("content") or "", "tool_calls": tool_calls, "raw_message": msg}
+        u = data.get("usage", {}) or {}
+        usage = {
+            "input": u.get("prompt_tokens", 0),
+            "output": u.get("completion_tokens", 0),
+            "total": u.get("total_tokens", 0),
+        }
+        return {
+            "content": msg.get("content") or "",
+            "tool_calls": tool_calls,
+            "raw_message": msg,
+            "usage": usage,
+        }
 
 
 class ClaudeProvider(BaseProvider):
@@ -64,6 +85,7 @@ class ClaudeProvider(BaseProvider):
     def __init__(self, api_key, model="claude-sonnet-4-6"):
         self.api_key = api_key
         self.model = model
+        self.context_window = CONTEXT_WINDOWS.get(model, 200_000)
 
     @staticmethod
     def _convert_tools(tools):
@@ -148,7 +170,13 @@ class ClaudeProvider(BaseProvider):
                 content_text += block["text"]
             elif block["type"] == "tool_use":
                 tool_calls.append({"id": block["id"], "name": block["name"], "arguments": block["input"]})
-        return {"content": content_text, "tool_calls": tool_calls, "raw_message": data}
+        u = data.get("usage", {}) or {}
+        usage = {
+            "input": u.get("input_tokens", 0),
+            "output": u.get("output_tokens", 0),
+            "total": u.get("input_tokens", 0) + u.get("output_tokens", 0),
+        }
+        return {"content": content_text, "tool_calls": tool_calls, "raw_message": data, "usage": usage}
 
 
 def get_provider(name: str = None):
@@ -163,4 +191,4 @@ def get_provider(name: str = None):
         return OpenAICompatProvider(config.OPENAI_API_KEY, config.OPENAI_BASE_URL, "gpt-4o-mini")
     if name == "mimo":
         return OpenAICompatProvider(config.MIMO_API_KEY, config.MIMO_BASE_URL, config.MIMO_MODEL)
-    raise ValueError(f"Provider '{name}' tidak dikenal. Pilihan: groq, claude, openai")
+    raise ValueError(f"Provider '{name}' tidak dikenal. Pilihan: groq, claude, openai, mimo")

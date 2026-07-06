@@ -6,6 +6,7 @@ Core agentic loop:
   4. Eksekusi tool, hasil dimasukkan lagi ke history
   5. Ulangi sampai LLM panggil task_done() atau max_iters habis
 """
+import time
 import json
 import config
 import tools
@@ -25,13 +26,23 @@ Jawab dalam Bahasa Indonesia santai, to the point."""
 
 class Agent:
     def __init__(self, provider_name=None, mode="confirm", notify=print, ask_confirm=None):
+        """
+        mode: 'auto' -> semua tool langsung eksekusi tanpa tanya
+              'confirm' -> tool risky (bash_exec, install_package, write_file) tanya dulu
+        notify(text): dipanggil tiap ada update status/jawaban dari AI
+        ask_confirm(tool_name, args) -> bool: dipanggil buat minta izin.
+        """
         self.provider = get_provider(provider_name)
         self.mode = mode
         self.notify = notify
         self.ask_confirm = ask_confirm or (lambda name, args: True)
         self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        self.session_tokens = 0
+        self.last_usage = {"input": 0, "output": 0, "total": 0}
+        self.last_elapsed = 0.0
 
     def reset(self):
+        """Mulai obrolan/task baru, buang history lama."""
         self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
     def set_provider(self, provider_name):
@@ -44,17 +55,25 @@ class Agent:
         self.mode = mode
 
     def _step(self, max_iters):
+        """Loop internal: proses messages saat ini sampai AI berhenti manggil tool atau task_done."""
         for _ in range(max_iters):
             try:
+                start = time.time()
                 resp = self.provider.chat(self.messages, tools.TOOLS_SCHEMA)
+                self.last_elapsed = time.time() - start
             except Exception as e:
                 self.notify(f"[error] gagal manggil provider: {e}")
                 return
+
+            usage = resp.get("usage") or {}
+            self.last_usage = usage
+            self.session_tokens += usage.get("total", 0)
 
             if resp["content"]:
                 self.notify(resp["content"])
 
             if not resp["tool_calls"]:
+                # Jawaban final / obrolan biasa -> simpan ke history, tunggu giliran user selanjutnya
                 self.messages.append({"role": "assistant", "content": resp["content"]})
                 return
 
@@ -96,10 +115,12 @@ class Agent:
         self.notify("[berhenti] max_iters tercapai, mungkin belum selesai total.")
 
     def chat(self, user_input: str, max_iters: int = None):
+        """Mode diskusi: history persisten, dipanggil berkali-kali dalam satu sesi."""
         max_iters = max_iters or config.MAX_ITERS
         self.messages.append({"role": "user", "content": user_input})
         self._step(max_iters)
 
     def run(self, task: str, max_iters: int = None):
+        """Mode one-shot (dipakai CLI non-interaktif): reset dulu baru jalanin satu task."""
         self.reset()
         self.chat(task, max_iters=max_iters)

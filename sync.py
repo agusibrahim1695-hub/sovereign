@@ -1,3 +1,10 @@
+"""
+Sync folder sessions/ ke GitHub private repo (gratis, unlimited buat repo private).
+Jadi memori gak cuma nyimpen di HP -- kalau HP ilang/reset, history tetep aman di cloud.
+
+Setup: isi GITHUB_TOKEN, GITHUB_REPO (format: username/reponame), GITHUB_BRANCH di .env.
+Kalau belum diisi, fungsi di sini otomatis no-op (gak ngapa-ngapain, gak error).
+"""
 import os
 import subprocess
 import config
@@ -28,6 +35,7 @@ def _ensure_remote():
 
 
 def push_sessions(quiet=True):
+    """Simpan sessions/ terbaru ke GitHub. Dipanggil tiap abis save lokal."""
     if not _configured():
         return
     try:
@@ -43,6 +51,7 @@ def push_sessions(quiet=True):
 
 
 def pull_sessions(quiet=True):
+    """Ambil sessions/ terbaru dari GitHub. Dipanggil pas buka portal."""
     if not _configured():
         return
     try:

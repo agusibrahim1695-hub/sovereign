@@ -27,7 +27,40 @@ BANNER = r"""
 """
 
 
-def ask_confirm_cli(name, args):
+def format_k(n):
+    n = n or 0
+    if n >= 1000:
+        return f"{n / 1000:.1f}K"
+    return str(n)
+
+
+def make_bar(pct, width=16):
+    filled = min(width, int(width * pct / 100))
+    return "█" * filled + "░" * (width - filled)
+
+
+def make_notify(agent, label="SOVEREIGN"):
+    def _notify(text):
+        if not text:
+            return
+        w = 58
+        print(f"\n┌─ 🤖 {label} " + "─" * max(0, w - len(label) - 6))
+        for line in text.split("\n"):
+            print(f"│ {line}")
+        print("└" + "─" * w)
+
+        ctx = getattr(agent.provider, "context_window", 128_000)
+        total = getattr(agent, "session_tokens", 0)
+        pct = min(100, int(total / ctx * 100)) if ctx else 0
+        model = getattr(agent.provider, "model", "?")
+        elapsed = getattr(agent, "last_elapsed", 0.0)
+        bar = make_bar(pct)
+        print(f"⚡ {model} | {format_k(total)}/{format_k(ctx)} tok | [{bar}] {pct}% | {elapsed:.1f}s\n")
+
+    return _notify
+
+
+
     print(f"\n⚠️  AI mau jalanin tool RISKY: {name}({args})")
     ans = input("Izinkan? [y/n]: ").strip().lower()
     return ans == "y"
@@ -97,10 +130,11 @@ def main():
     agent = Agent(
         provider_name=args.provider,
         mode=mode,
-        notify=lambda t: print(f"\n🤖 {t}\n"),
+        notify=print,
         ask_confirm=ask_confirm_cli,
     )
     agent.provider_name = args.provider or config.DEFAULT_PROVIDER
+    agent.notify = make_notify(agent)
 
     print(BANNER)
     sync.pull_sessions()

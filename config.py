@@ -36,6 +36,7 @@ OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_ALLOWED_CHAT_ID = os.environ.get("TELEGRAM_ALLOWED_CHAT_ID", "")
 DEFAULT_PROVIDER = os.environ.get("DEFAULT_PROVIDER", "groq")
+DEFAULT_MODE = os.environ.get("DEFAULT_MODE", "confirm")
 WORKSPACE_DIR = os.environ.get(
     "WORKSPACE_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace")
 )

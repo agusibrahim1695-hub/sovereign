@@ -27,6 +27,17 @@ BANNER = r"""
 """
 
 
+RESET = "\033[0m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+CYAN = "\033[36m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+RED = "\033[31m"
+MAGENTA = "\033[35m"
+BLUE = "\033[34m"
+
+
 def format_k(n):
     n = n or 0
     if n >= 1000:
@@ -36,7 +47,8 @@ def format_k(n):
 
 def make_bar(pct, width=16):
     filled = min(width, int(width * pct / 100))
-    return "█" * filled + "░" * (width - filled)
+    color = GREEN if pct < 50 else (YELLOW if pct < 80 else RED)
+    return f"{color}{'█' * filled}{DIM}{'░' * (width - filled)}{RESET}"
 
 
 def make_notify(agent, label="SOVEREIGN"):
@@ -44,10 +56,10 @@ def make_notify(agent, label="SOVEREIGN"):
         if not text:
             return
         w = 58
-        print(f"\n┌─ 🤖 {label} " + "─" * max(0, w - len(label) - 6))
+        print(f"\n{CYAN}┌─ {BOLD}{YELLOW}🤖 {label} {RESET}{CYAN}" + "─" * max(0, w - len(label) - 6) + RESET)
         for line in text.split("\n"):
-            print(f"│ {line}")
-        print("└" + "─" * w)
+            print(f"{CYAN}│{RESET} {line}")
+        print(f"{CYAN}└" + "─" * w + RESET)
 
         ctx = getattr(agent.provider, "context_window", 128_000)
         total = getattr(agent, "session_tokens", 0)
@@ -55,7 +67,12 @@ def make_notify(agent, label="SOVEREIGN"):
         model = getattr(agent.provider, "model", "?")
         elapsed = getattr(agent, "last_elapsed", 0.0)
         bar = make_bar(pct)
-        print(f"⚡ {model} | {format_k(total)}/{format_k(ctx)} tok | [{bar}] {pct}% | {elapsed:.1f}s\n")
+        pct_color = GREEN if pct < 50 else (YELLOW if pct < 80 else RED)
+        print(
+            f"{MAGENTA}⚡ {model}{RESET} {DIM}|{RESET} "
+            f"{format_k(total)}/{format_k(ctx)} tok {DIM}|{RESET} "
+            f"[{bar}] {pct_color}{pct}%{RESET} {DIM}|{RESET} {BLUE}{elapsed:.1f}s{RESET}\n"
+        )
 
     return _notify
 
@@ -136,7 +153,7 @@ def main():
     agent.provider_name = args.provider or config.DEFAULT_PROVIDER
     agent.notify = make_notify(agent)
 
-    print(BANNER)
+    print(f"{CYAN}{BOLD}{BANNER}{RESET}")
     sync.pull_sessions()
 
     resumed = False
@@ -146,16 +163,16 @@ def main():
             agent.messages = loaded
             resumed = True
 
-    print(f"provider: {agent.provider_name} | mode: {mode}  (/help untuk daftar command)")
+    print(f"{GREEN}provider: {agent.provider_name} | mode: {mode}{RESET}  {DIM}(/help untuk daftar command){RESET}")
     if resumed:
         n_user = sum(1 for m in agent.messages if m["role"] == "user")
-        print(f"📂 Lanjut sesi sebelumnya ({n_user} pesan). Pakai --fresh atau /reset buat mulai baru.\n")
+        print(f"{YELLOW}📂 Lanjut sesi sebelumnya ({n_user} pesan). Pakai --fresh atau /reset buat mulai baru.{RESET}\n")
     else:
-        print("Sesi baru dimulai.\n")
+        print(f"{DIM}Sesi baru dimulai.{RESET}\n")
 
     while True:
         try:
-            user_input = input("Lo   : ").strip()
+            user_input = input(f"{BOLD}{GREEN}Lo   : {RESET}").strip()
         except (EOFError, KeyboardInterrupt):
             save_session(LAST_SESSION, agent)
             print("\nSOVEREIGN off, obrolan kesimpen. Sampai ketemu lagi, bro.")

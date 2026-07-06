@@ -60,7 +60,7 @@ def make_notify(agent, label="SOVEREIGN"):
     return _notify
 
 
-
+def ask_confirm_cli(name, args):
     print(f"\n⚠️  AI mau jalanin tool RISKY: {name}({args})")
     ans = input("Izinkan? [y/n]: ").strip().lower()
     return ans == "y"

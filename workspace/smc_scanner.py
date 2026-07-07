@@ -3,6 +3,8 @@
 import sys,time,math
 sys.path.insert(0,".")
 from smc_core import fc,fp,tr,dob,dfvg,dliq,dbos,gzone,L1,L2,L3,L4,L5,vrd,API_KEYS
+from trade_journal import log_trade
+from trade_notify import alert_trade
 
 PAIRS = [
     "XAU/USD","EUR/USD","GBP/USD",
@@ -155,6 +157,7 @@ def strategy_entry(r, dxy_dir, dxy_corr_type):
         'sl': f"{sl:.5f}" if sl else "?",
         'tp1': f"{tp1:.5f}" if tp1 else "?",
         'tp2': f"{tp2:.5f}" if tp2 else "?",
+        'rr': round(tp1_pips/sl_pips, 1) if sl_pips > 0 else 0,
         'risk': risk,
         'conf_score': conf_score,
         'dxy_corr': dxy_corr_type,
@@ -255,13 +258,33 @@ def run():
                 o = r['bear_ob']
                 print(f"    OB Bear   : ${o['l']:.3f} - ${o['h']:.3f}")
 
-            print(f"\n    ┌── STRATEGY ──")
-            print(f"    │ Direction : {s['direction']}")
-            print(f"    │ Entry     : {s['entry']}")
-            print(f"    │ SL        : {s['sl']}")
-            print(f"    │ TP1       : {s['tp1']}")
-            print(f"    │ TP2       : {s['tp2']}")
-            print(f"    └────────────")
+            print(f"\n    STRATEGY:")
+            print(f"    Direction : {s['direction']}")
+            print(f"    Entry     : {s['entry']}")
+            print(f"    SL        : {s['sl']}")
+            print(f"    TP1       : {s['tp1']}")
+            print(f"    TP2       : {s['tp2']}")
+            print(f"    RR        : 1:{s['rr']}")
+            print(f"    Score     : {s['conf_score']}/5")
+
+            # AUTO LOG + NOTIF
+            if s['direction'] in ['BUY','SELL']:
+                try:
+                    layers_data = [l[1] for l in r['layers']]
+                    entry_val = float(s['entry'].split('-')[0].strip())
+                    trade_id = log_trade(
+                        pair=r['sym'], direction=s['direction'],
+                        entry=entry_val, sl=float(s['sl']),
+                        tp1=float(s['tp1']), tp2=float(s['tp2']),
+                        rr=float(s['rr']), conviction=s['conf_score'],
+                        grade=grade(r['bull']),
+                        layers=layers_data,
+                        verdict=f"{s['direction']} ({r['bull']}/{r['total']})"
+                    )
+                    print(f"    LOGGED: Trade #{trade_id}")
+                    alert_trade(r['sym'], s['direction'], s['entry'], s['sl'], s['tp1'], s['tp2'], s['rr'], grade(r['bull']))
+                except Exception as e:
+                    print(f"    LOG ERR: {e}")
     else:
         print(f"\n  Tidak ada setup. Tunggu confluence lebih kuat.")
 

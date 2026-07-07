@@ -8,7 +8,6 @@ Tinggal nambah class baru kalau mau provider lain (deepseek, openrouter, dll —
 selama API-nya OpenAI-compatible, tinggal reuse OpenAICompatProvider).
 """
 import json
-import time
 import requests
 import config
 
@@ -28,42 +27,6 @@ CONTEXT_WINDOWS = {
     "mimo": 128_000,
 }
 
-# Kalau kena status code ini, coba lagi otomatis (rate limit / server sibuk)
-RETRYABLE_STATUS = {429, 500, 502, 503, 529}
-MAX_RETRIES = 4
-BASE_BACKOFF = 2  # detik, naik 2x tiap percobaan (2, 4, 8, 16...)
-
-
-def _request_with_retry(method, url, **kwargs):
-    """Wrapper requests.post/get dengan retry+backoff buat status code yang retryable."""
-    last_exc = None
-    for attempt in range(MAX_RETRIES + 1):
-        try:
-            resp = method(url, **kwargs)
-        except requests.exceptions.RequestException as e:
-            last_exc = e
-            if attempt == MAX_RETRIES:
-                raise
-            time.sleep(BASE_BACKOFF * (2 ** attempt))
-            continue
-
-        if resp.status_code in RETRYABLE_STATUS and attempt < MAX_RETRIES:
-            wait = BASE_BACKOFF * (2 ** attempt)
-            retry_after = resp.headers.get("retry-after")
-            if retry_after:
-                try:
-                    wait = max(wait, float(retry_after))
-                except ValueError:
-                    pass
-            time.sleep(wait)
-            continue
-
-        return resp
-
-    if last_exc:
-        raise last_exc
-    return resp
-
 
 class OpenAICompatProvider(BaseProvider):
     """Dipakai untuk Groq, OpenAI asli, atau LLM lokal/openrouter yang OpenAI-compatible."""
@@ -75,8 +38,7 @@ class OpenAICompatProvider(BaseProvider):
         self.context_window = CONTEXT_WINDOWS.get(model, 128_000)
 
     def chat(self, messages, tools):
-        resp = _request_with_retry(
-            requests.post,
+        resp = requests.post(
             f"{self.base_url}/chat/completions",
             headers={
                 "Authorization": f"Bearer {self.api_key}",
@@ -183,8 +145,7 @@ class ClaudeProvider(BaseProvider):
 
     def chat(self, messages, tools):
         system, conv = self._convert_messages(messages)
-        resp = _request_with_retry(
-            requests.post,
+        resp = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={
                 "x-api-key": self.api_key,
@@ -230,6 +191,4 @@ def get_provider(name: str = None):
         return OpenAICompatProvider(config.OPENAI_API_KEY, config.OPENAI_BASE_URL, "gpt-4o-mini")
     if name == "mimo":
         return OpenAICompatProvider(config.MIMO_API_KEY, config.MIMO_BASE_URL, config.MIMO_MODEL)
-       if name == "custom":
-        return OpenAICompatProvider(config.CUSTOM_API_KEY, config.CUSTOM_BASE_URL, config.CUSTOM_MODEL)
     raise ValueError(f"Provider '{name}' tidak dikenal. Pilihan: groq, claude, openai, mimo")

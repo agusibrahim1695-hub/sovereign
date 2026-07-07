@@ -5,12 +5,7 @@ Core agentic loop:
   3. Kalau ada tool_call risky & mode='confirm' -> tanya user dulu
   4. Eksekusi tool, hasil dimasukkan lagi ke history
   5. Ulangi sampai LLM panggil task_done() atau max_iters habis
-
-Tampilan ke user dibikin ringkas: tiap tool yang jalan cuma nongol satu baris
-singkat "⏳ sedang X..." (bukan dump argumen + hasil mentah). Hasil akhir/​
-kesimpulan dari AI tetap ditampilkan lengkap.
 """
-import os
 import time
 import json
 import config
@@ -28,49 +23,25 @@ Kalau lagi ngerjain task dan sudah selesai + sudah dites/berfungsi, panggil tool
 Kalau user cuma ngobrol/nanya (bukan minta dibuatkan sesuatu), jangan panggil task_done, cukup jawab biasa.
 Jawab dalam Bahasa Indonesia santai, to the point."""
 
-# Label ramah buat ditampilkan ke user pas tool lagi jalan (bukan nama teknis)
-TOOL_LABELS = {
-    "bash_exec": "Menjalankan perintah",
-    "install_package": "Menginstall package",
-    "write_file": "Menulis file",
-    "read_file": "Membaca file",
-    "list_dir": "Melihat isi folder",
-    "fetch_url": "Mengambil data dari web",
-    "web_search": "Mencari di internet",
-}
-
-
-def _tool_label(name, args):
-    base = TOOL_LABELS.get(name, name)
-    if name in ("write_file", "read_file"):
-        p = args.get("path", "")
-        return f"{base}: {p}" if p else base
-    if name == "install_package":
-        pkg = args.get("package", "")
-        return f"{base}: {pkg}" if pkg else base
-    if name == "fetch_url":
-        url = args.get("url", "")
-        return f"{base}: {url}" if url else base
-    return base
-
 
 class Agent:
-    def __init__(self, provider_name=None, mode="confirm", notify=print, ask_confirm=None,
-                 session_name=None, auto_trim_ratio=0.75):
+    def __init__(self, provider_name=None, mode="confirm", notify=print, ask_confirm=None):
+        """
+        mode: 'auto' -> semua tool langsung eksekusi tanpa tanya
+              'confirm' -> tool risky (bash_exec, install_package, write_file) tanya dulu
+        notify(text): dipanggil tiap ada update status/jawaban dari AI
+        ask_confirm(tool_name, args) -> bool: dipanggil buat minta izin.
+        """
         self.provider_name = provider_name or config.DEFAULT_PROVIDER
         self.provider = get_provider(provider_name)
         self.mode = mode
         self.notify = notify
         self.ask_confirm = ask_confirm or (lambda name, args: True)
-        self.session_name = session_name
-        self.auto_trim_ratio = auto_trim_ratio
         self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         self.session_tokens = 0
         self.last_usage = {"input": 0, "output": 0, "total": 0}
         self.last_elapsed = 0.0
 
-        if session_name:
-            self.load_session(session_name)
     def reset(self):
         """Mulai obrolan/task baru, buang history lama."""
         self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -84,54 +55,9 @@ class Agent:
             raise ValueError("mode harus 'auto' atau 'confirm'")
         self.mode = mode
 
-    def _estimate_tokens(self, messages):
-        total_chars = sum(len(json.dumps(m, ensure_ascii=False)) for m in messages)
-        return total_chars // 4
-
-    def _trim_history(self):
-        limit = int(self.provider.context_window * self.auto_trim_ratio)
-        if self._estimate_tokens(self.messages) <= limit:
-            return
-        system = self.messages[0]
-        rest = self.messages[1:]
-        while rest and self._estimate_tokens([system] + rest) > limit:
-            msg = rest.pop(0)
-            if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                n_calls = len(msg["tool_calls"])
-                for _ in range(n_calls):
-                    if rest and rest[0].get("role") == "tool":
-                        rest.pop(0)
-        self.messages = [system] + rest
-        self.notify("ℹ️ history dipangkas otomatis biar gak kelebihan context window.")
-
-    def save_session(self, name=None):
-        name = name or self.session_name
-        if not name:
-            return
-        path = os.path.join(config.SESSIONS_DIR, f"{name}.json")
-        try:
-            with open(path, "w") as f:
-                json.dump(self.messages, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            self.notify(f"⚠️ gagal simpan session: {e}")
-
-    def load_session(self, name):
-        path = os.path.join(config.SESSIONS_DIR, f"{name}.json")
-        if not os.path.exists(path):
-            self.session_name = name
-            return
-        try:
-            with open(path, "r") as f:
-                self.messages = json.load(f)
-            self.session_name = name
-            self.notify(f"📂 session '{name}' dimuat ({len(self.messages)} pesan).")
-        except Exception as e:
-            self.notify(f"⚠️ gagal load session: {e}")
-
     def _step(self, max_iters):
         """Loop internal: proses messages saat ini sampai AI berhenti manggil tool atau task_done."""
         for _ in range(max_iters):
-            self._trim_history()
             try:
                 start = time.time()
                 resp = self.provider.chat(self.messages, tools.TOOLS_SCHEMA)
@@ -176,25 +102,16 @@ class Agent:
                     done = True
                     continue  # tetap proses tool_call lain di batch ini, jangan langsung return
 
-                label = _tool_label(name, args)
-
                 if name not in tools.DISPATCH:
                     result = f"[error] tool '{name}' tidak dikenal"
-                    self.notify(f"⚠️ {label} gagal (tool tidak dikenal)")
                 else:
-                    self.notify(f"⏳ {label}...")
                     if self.mode == "confirm" and name in tools.RISKY_TOOLS:
                         allowed = self.ask_confirm(name, args)
-                        if not allowed:
-                            result = "[ditolak user] eksekusi dibatalkan"
-                            self.notify(f"🚫 {label} dibatalkan")
-                        else:
-                            result = tools.DISPATCH[name](args)
+                        result = "[ditolak user] eksekusi dibatalkan" if not allowed else tools.DISPATCH[name](args)
                     else:
                         result = tools.DISPATCH[name](args)
 
-                    if str(result).startswith("[error]"):
-                        self.notify(f"⚠️ {label} gagal")
+                    self.notify(f"🔧 {name}({args}) ->\n{result[:800]}")
 
                 self.messages.append({"role": "tool", "tool_call_id": call_id, "content": str(result)})
 
@@ -208,7 +125,6 @@ class Agent:
         max_iters = max_iters or config.MAX_ITERS
         self.messages.append({"role": "user", "content": user_input})
         self._step(max_iters)
-        self.save_session()
 
     def run(self, task: str, max_iters: int = None):
         """Mode one-shot (dipakai CLI non-interaktif): reset dulu baru jalanin satu task."""

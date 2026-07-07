@@ -4,13 +4,7 @@ Jadi memori gak cuma nyimpen di HP -- kalau HP ilang/reset, history tetep aman d
 
 Setup: isi GITHUB_TOKEN, GITHUB_REPO (format: username/reponame), GITHUB_BRANCH di .env.
 Kalau belum diisi, fungsi di sini otomatis no-op (gak ngapa-ngapain, gak error).
-
-CATATAN KEAMANAN: token TIDAK pernah ditulis ke .git/config. Auth dilakukan
-per-command lewat header HTTP sementara (-c http.extraheader), jadi walau
-bash_exec bisa baca semua file di workspace, `cat .git/config` gak bakal
-bocorin GITHUB_TOKEN.
 """
-import base64
 import os
 import subprocess
 import config
@@ -22,22 +16,14 @@ def _configured():
     return bool(config.GITHUB_TOKEN and config.GITHUB_REPO)
 
 
-def _auth_header():
-    token = base64.b64encode(f"x-access-token:{config.GITHUB_TOKEN}".encode()).decode()
-    return f"http.extraheader=AUTHORIZATION: basic {token}"
-
-
-def _git(*args, authed=False):
-    cmd = ["git"]
-    if authed:
-        cmd += ["-c", _auth_header()]
-    cmd += list(args)
-    return subprocess.run(cmd, cwd=REPO_DIR, capture_output=True, text=True, timeout=30)
+def _git(*args):
+    return subprocess.run(
+        ["git", *args], cwd=REPO_DIR, capture_output=True, text=True, timeout=30
+    )
 
 
 def _remote_url():
-    # Tidak ada token di URL sama sekali — auth sepenuhnya lewat header sementara.
-    return f"https://github.com/{config.GITHUB_REPO}.git"
+    return f"https://{config.GITHUB_TOKEN}@github.com/{config.GITHUB_REPO}.git"
 
 
 def _ensure_remote():
@@ -48,22 +34,15 @@ def _ensure_remote():
         _git("remote", "set-url", "origin", _remote_url())
 
 
-def _has_changes():
-    r = _git("status", "--porcelain", "sessions")
-    return bool(r.stdout.strip())
-
-
 def push_sessions(quiet=True):
     """Simpan sessions/ terbaru ke GitHub. Dipanggil tiap abis save lokal."""
     if not _configured():
         return
     try:
         _ensure_remote()
-        if not _has_changes():
-            return  # gak ada perubahan, skip commit kosong
         _git("add", "sessions")
-        _git("commit", "-m", "sync sessions")
-        r = _git("push", "-u", "origin", f"HEAD:{config.GITHUB_BRANCH}", authed=True)
+        _git("commit", "-m", "sync sessions", "--allow-empty")
+        r = _git("push", "-u", "origin", f"HEAD:{config.GITHUB_BRANCH}")
         if not quiet and r.returncode != 0:
             print(f"[sync] push gagal: {r.stderr[-300:]}")
     except Exception as e:
@@ -72,20 +51,12 @@ def push_sessions(quiet=True):
 
 
 def pull_sessions(quiet=True):
-    """Ambil sessions/ terbaru dari GitHub. Dipanggil pas buka portal.
-
-    Kalau ada perubahan lokal yang belum di-push (misal push sebelumnya gagal),
-    checkout dibatalkan supaya history lokal gak ketiban tanpa peringatan.
-    """
+    """Ambil sessions/ terbaru dari GitHub. Dipanggil pas buka portal."""
     if not _configured():
         return
     try:
-        if _has_changes():
-            if not quiet:
-                print("[sync] ada perubahan lokal belum ke-push, skip pull biar gak ketiban.")
-            return
         _ensure_remote()
-        r = _git("fetch", "origin", config.GITHUB_BRANCH, authed=True)
+        r = _git("fetch", "origin", config.GITHUB_BRANCH)
         if r.returncode != 0:
             if not quiet:
                 print(f"[sync] fetch gagal (mungkin repo masih kosong): {r.stderr[-300:]}")

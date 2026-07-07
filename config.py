@@ -43,10 +43,19 @@ GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "main")
 MIMO_API_KEY = os.environ.get("MIMO_API_KEY", "")
 MIMO_BASE_URL = os.environ.get("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1")
 MIMO_MODEL = os.environ.get("MIMO_MODEL", "mimo")
+CUSTOM_API_KEY = os.environ.get("CUSTOM_API_KEY", "")
+CUSTOM_BASE_URL = os.environ.get("CUSTOM_BASE_URL", "")
+CUSTOM_MODEL = os.environ.get("CUSTOM_MODEL", "")
+SERPER_API_KEY = os.environ.get("SERPER_API_KEY", "")
 WORKSPACE_DIR = os.environ.get(
     "WORKSPACE_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace")
 )
 MAX_ITERS = int(os.environ.get("MAX_ITERS", "25"))
 BASH_TIMEOUT = int(os.environ.get("BASH_TIMEOUT", "120"))
+
+SESSIONS_DIR = os.environ.get(
+    "SESSIONS_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions")
+)
+os.makedirs(SESSIONS_DIR, exist_ok=True)
 
 os.makedirs(WORKSPACE_DIR, exist_ok=True)

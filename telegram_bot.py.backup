@@ -8,9 +8,6 @@ Telegram interface buat agent. Chat ke bot lo:
 
 Kalau ada step risky & mode confirm, bot bakal nanya balik "y/n" di chat -> lo balas aja.
 Jalanin: python telegram_bot.py
-
-CATATAN: satu chat cuma boleh punya SATU task jalan bersamaan (dijaga pakai lock),
-supaya notify dari 2 task berbeda gak kecampur di percakapan yang sama.
 """
 import threading
 import time
@@ -19,26 +16,22 @@ import config
 from agent import Agent
 
 API = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}"
-ALLOWED_CHAT_ID = str(config.TELEGRAM_ALLOWED_CHAT_ID) if config.TELEGRAM_ALLOWED_CHAT_ID else ""
+ALLOWED_CHAT_ID = str(config.TELEGRAM_ALLOWED_CHAT_ID)
 
 # state konfirmasi per chat: {chat_id: {"event": Event, "answer": bool}}
 pending = {}
 pending_lock = threading.Lock()
 
-# chat_id yang lagi punya task jalan (biar gak numpuk 2 task bareng di chat yang sama)
-busy_chats = set()
-busy_lock = threading.Lock()
-
 
 def send_message(chat_id, text):
-    if not text:
-        return
-    for chunk_start in range(0, len(text), 3500):
-        chunk = text[chunk_start: chunk_start + 3500]
+    for chunk_start in range(0, max(len(text), 1), 3500):
+        chunk = text[chunk_start : chunk_start + 3500] or text
         try:
             requests.post(f"{API}/sendMessage", json={"chat_id": chat_id, "text": chunk}, timeout=20)
         except Exception as e:
             print(f"[telegram] gagal kirim pesan: {e}")
+        if not text:
+            break
 
 
 def ask_confirm_telegram(chat_id):
@@ -60,20 +53,17 @@ def ask_confirm_telegram(chat_id):
 
 
 def run_agent_task(chat_id, task, mode, provider_name):
+    agent = Agent(
+        provider_name=provider_name,
+        mode=mode,
+        notify=lambda t: send_message(chat_id, t),
+        ask_confirm=ask_confirm_telegram(chat_id),
+    )
+    send_message(chat_id, f"🚀 Mulai (mode={mode}, provider={provider_name or 'default'})\nTask: {task}")
     try:
-        agent = Agent(
-            provider_name=provider_name,
-            mode=mode,
-            notify=lambda t: send_message(chat_id, t),
-            ask_confirm=ask_confirm_telegram(chat_id),
-        )
-        send_message(chat_id, f"🚀 Mulai (mode={mode}, provider={provider_name or 'default'})\nTask: {task}")
         agent.run(task)
     except Exception as e:
         send_message(chat_id, f"[error] agent crash: {e}")
-    finally:
-        with busy_lock:
-            busy_chats.discard(chat_id)
 
 
 def handle_message(chat_id, text):
@@ -97,23 +87,16 @@ def handle_message(chat_id, text):
             "Ketik langsung task-nya (default mode = confirm, bakal nanya sebelum eksekusi risky).\n"
             "Prefix opsional:\n"
             "/auto <task>        -> full otomatis tanpa tanya\n"
-            "/provider claude <task> / groq / openai / mimo\n",
+            "/provider claude <task> / groq / openai\n",
         )
         return
-
-    # cek apakah chat ini lagi ada task jalan
-    with busy_lock:
-        if chat_id in busy_chats:
-            send_message(chat_id, "⏳ Masih ada task lain yang lagi jalan di chat ini, tunggu selesai dulu ya.")
-            return
-        busy_chats.add(chat_id)
 
     mode = "confirm"
     provider_name = None
 
     if text.startswith("/auto"):
         mode = "auto"
-        text = text[len("/auto"):].strip()
+        text = text[len("/auto") :].strip()
 
     if text.startswith("/provider"):
         parts = text.split(maxsplit=2)
@@ -123,8 +106,6 @@ def handle_message(chat_id, text):
 
     if not text:
         send_message(chat_id, "Task-nya kosong, ketik perintahnya bro.")
-        with busy_lock:
-            busy_chats.discard(chat_id)
         return
 
     threading.Thread(target=run_agent_task, args=(chat_id, text, mode, provider_name), daemon=True).start()
@@ -134,9 +115,6 @@ def main():
     if not config.TELEGRAM_BOT_TOKEN:
         print("TELEGRAM_BOT_TOKEN belum di-set di .env")
         return
-    if not ALLOWED_CHAT_ID:
-        print("⚠️  PERINGATAN: TELEGRAM_ALLOWED_CHAT_ID belum di-set — bot ini bisa dipakai SIAPA SAJA yang nemu bot lo di Telegram!")
-
     print("🤖 SOVEREIGN Telegram bot jalan... (Ctrl+C untuk stop)")
     offset = 0
     while True:

@@ -34,6 +34,7 @@ def main():
         mode=mode,
         notify=lambda t: print(f"\n{t}"),
         ask_confirm=ask_confirm_cli,
+        session_name="cli",
     )
     print(f"🚀 Mulai task (mode={mode}, provider={args.provider or 'default'}): {args.task}\n")
     agent.run(args.task, max_iters=args.max_iters)

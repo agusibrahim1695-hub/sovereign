@@ -7,10 +7,8 @@ Bisa punya beberapa sesi/proyek terpisah pakai /save dan /load.
 import argparse
 import json
 import os
-import sys
 import config
 import sync
-import setup_menu
 from agent import Agent
 
 SESSION_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions")
@@ -70,23 +68,16 @@ def make_notify(agent, label="SOVEREIGN"):
         print(f"{CYAN}└" + "─" * w + RESET)
 
         ctx = getattr(agent.provider, "context_window", 128_000)
-        last_usage = getattr(agent, "last_usage", {}) or {}
-        # Pakai token input dari panggilan TERAKHIR aja buat ukur context terpakai
-        # (ini jumlah token history yang beneran dikirim barusan), bukan akumulasi
-        # dari awal sesi -- akumulasi itu double-count dan gak nunjukin kepenuhan
-        # context yang sebenarnya.
-        context_used = last_usage.get("input", 0)
-        session_total = getattr(agent, "session_tokens", 0)
-        pct = min(100, int(context_used / ctx * 100)) if ctx else 0
+        total = getattr(agent, "session_tokens", 0)
+        pct = min(100, int(total / ctx * 100)) if ctx else 0
         model = getattr(agent.provider, "model", "?")
         elapsed = getattr(agent, "last_elapsed", 0.0)
         bar = make_bar(pct)
         pct_color = GREEN if pct < 50 else (YELLOW if pct < 80 else RED)
         print(
             f"{MAGENTA}⚡ {model}{RESET} {DIM}|{RESET} "
-            f"{format_k(context_used)}/{format_k(ctx)} tok {DIM}|{RESET} "
-            f"[{bar}] {pct_color}{pct}%{RESET} {DIM}|{RESET} {BLUE}{elapsed:.1f}s{RESET} {DIM}|{RESET} "
-            f"total sesi: {format_k(session_total)} tok\n"
+            f"{format_k(total)}/{format_k(ctx)} tok {DIM}|{RESET} "
+            f"[{bar}] {pct_color}{pct}%{RESET} {DIM}|{RESET} {BLUE}{elapsed:.1f}s{RESET}\n"
         )
 
     return _notify
@@ -220,10 +211,6 @@ Ketik bebas aja buat ngobrol atau nyuruh bikinin/jalanin sesuatu.
 
 
 def main():
-    if len(sys.argv) > 1 and sys.argv[1] == "setup":
-        setup_menu.run()
-        return
-
     parser = argparse.ArgumentParser(description="SOVEREIGN Agent Portal")
     parser.add_argument("--provider", default=None, help="groq | claude | openai | mimo")
     parser.add_argument("--auto", action="store_true", help="mulai dengan mode full-auto")

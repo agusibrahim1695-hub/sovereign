@@ -9,7 +9,6 @@ Ini sengaja, buat fitur self-upgrade, tapi berarti bash_exec = akses penuh.
 """
 import subprocess
 import os
-import requests
 import config
 
 TOOLS_SCHEMA = [
@@ -97,20 +96,6 @@ TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
-            "name": "web_search",
-            "description": "Cari informasi terkini di internet via Google Search (hasil berupa ringkasan judul+snippet, bukan scraping langsung). Pakai ini kalau butuh info yang gak pasti ada di fetch_url, kayak berita terbaru, harga, fakta umum, atau nyari URL yang relevan sebelum fetch_url.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Kata kunci pencarian"}
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "task_done",
             "description": "Panggil ini SEKALI saja saat task sudah selesai sepenuhnya, untuk mengakhiri loop dan kasih laporan ke user.",
             "parameters": {
@@ -158,40 +143,6 @@ def fetch_url(url: str) -> str:
     except Exception as e:
         return f"[error] gagal fetch url: {e}"
 
-def web_search(query: str) -> str:
-    if not config.SERPER_API_KEY:
-        return "[error] SERPER_API_KEY belum diisi di .env"
-    try:
-        resp = requests.post(
-            "https://google.serper.dev/search",
-            headers={
-                "X-API-KEY": config.SERPER_API_KEY,
-                "Content-Type": "application/json",
-            },
-            json={"q": query},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-
-        lines = []
-        answer_box = data.get("answerBox")
-        if answer_box:
-            snippet = answer_box.get("answer") or answer_box.get("snippet")
-            if snippet:
-                lines.append(f"[Jawaban langsung] {snippet}")
-
-        for item in data.get("organic", [])[:6]:
-            title = item.get("title", "")
-            link = item.get("link", "")
-            snippet = item.get("snippet", "")
-            lines.append(f"- {title}\n  {snippet}\n  {link}")
-
-        if not lines:
-            return "[info] tidak ada hasil ditemukan"
-        return "\n".join(lines)
-    except Exception as e:
-        return f"[error] gagal web_search: {e}"
 
 def bash_exec(command: str) -> str:
     try:
@@ -264,5 +215,4 @@ DISPATCH = {
     "read_file": lambda args: read_file(args["path"]),
     "list_dir": lambda args: list_dir(args.get("path", ".")),
     "fetch_url": lambda args: fetch_url(args["url"]),
-    "web_search": lambda args: web_search(args["query"]),
 }

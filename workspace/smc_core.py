@@ -1,18 +1,37 @@
 #!/usr/bin/env python3
-"""MULTI-LAYER CONFLUENCE - Core Engine v2 (FIXED)"""
-import requests
-K="93ef121c0685411cbdd6c556bcfb5eee";B="https://api.twelvedata.com"
+"""MULTI-LAYER CONFLUENCE - Core Engine v3 (Multi-API Key)"""
+import requests,itertools,time
+
+API_KEYS = [
+    "93ef121c0685411cbdd6c556bcfb5eee",
+    "96f10037ed494dfb87b541b9848a628d",
+    "77bb656a183e41349aeaaff3d178b9f7",
+    "c5ba341585554d6893f2a1d5f25433e3",
+]
+_key_cycle = itertools.cycle(API_KEYS)
+B = "https://api.twelvedata.com"
+_last_call = 0
+
+def _next_key():
+    global _last_call
+    # Rate limit: min 1.5s between calls
+    elapsed = time.time() - _last_call
+    if elapsed < 1.5:
+        time.sleep(1.5 - elapsed)
+    _last_call = time.time()
+    return next(_key_cycle)
 
 def fc(s,iv,n=200):
     try:
-        r=requests.get(f"{B}/time_series",params={"symbol":s,"interval":iv,"outputsize":n,"apikey":K},timeout=15).json()
+        r=requests.get(f"{B}/time_series",params={"symbol":s,"interval":iv,"outputsize":n,"apikey":_next_key()},timeout=15).json()
         if "values" not in r: return []
         return [{"dt":v["datetime"],"o":float(v["open"]),"h":float(v["high"]),"l":float(v["low"]),"c":float(v["close"])} for v in reversed(r["values"])]
     except: return []
 
 def fp(s):
     try:
-        r=requests.get(f"{B}/quote?symbol={s}&apikey={K}",timeout=10).json()
+        r=requests.get(f"{B}/quote?symbol={s}&apikey={_next_key()}",timeout=10).json()
+        if "close" not in r: return None,None
         return float(r["close"]),r
     except: return None,None
 
@@ -27,7 +46,6 @@ def sw(cs,n=3):
     return sh,sl
 
 def tr(cs):
-    """Market structure - FIX: prev_high dan prev_low TERPISAH"""
     sh,sl=sw(cs)
     a=[{"t":"H","p":s["p"],"i":s["i"],"d":s["d"]} for s in sh]+[{"t":"L","p":s["p"],"i":s["i"],"d":s["d"]} for s in sl]
     a.sort(key=lambda x:x["i"])

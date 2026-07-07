@@ -146,14 +146,35 @@ def L1(dt,wt):
 
 def L2(ob,fv,lq,p):
     sc=0;nt=[]
+    # Ambil OB TERDEKAT saja (no overlap)
+    bull_ob_near=None;bear_ob_near=None
     for o in ob:
-        if o["t"]=="B"and o["l"]<=p<=o["h"]+0.1: sc+=2;nt.append("Di Bullish OB")
-        if o["t"]=="S"and o["l"]-0.1<=p<=o["h"]: sc-=2;nt.append("Di Bearish OB")
+        if o["t"]=="B"and o["l"]<=p<=o["h"]+0.1:
+            d=abs(p-(o["l"]+o["h"])/2)
+            if bull_ob_near is None or d<bull_ob_near[1]: bull_ob_near=(o,d)
+        if o["t"]=="S"and o["l"]-0.1<=p<=o["h"]:
+            d=abs(p-(o["l"]+o["h"])/2)
+            if bear_ob_near is None or d<bear_ob_near[1]: bear_ob_near=(o,d)
+    if bull_ob_near: sc+=2;nt.append("Di Bullish OB")
+    if bear_ob_near: sc-=2;nt.append("Di Bearish OB")
+    # Ambil FVG TERDEKAT saja
+    bull_fvg_near=None;bear_fvg_near=None
     for f in fv:
-        if f["t"]=="B"and f["l"]<=p<=f["h"]+0.1: sc+=1;nt.append("Di Bullish FVG")
-        if f["t"]=="S"and f["l"]-0.1<=p<=f["h"]: sc-=1;nt.append("Di Bearish FVG")
+        if f["t"]=="B"and f["l"]<=p<=f["h"]+0.1:
+            d=abs(p-(f["l"]+f["h"])/2)
+            if bull_fvg_near is None or d<bull_fvg_near[1]: bull_fvg_near=(f,d)
+        if f["t"]=="S"and f["l"]-0.1<=p<=f["h"]:
+            d=abs(p-(f["l"]+f["h"])/2)
+            if bear_fvg_near is None or d<bear_fvg_near[1]: bear_fvg_near=(f,d)
+    if bull_fvg_near: sc+=1;nt.append("Di Bullish FVG")
+    if bear_fvg_near: sc-=1;nt.append("Di Bearish FVG")
+    # SSL swept paling dekat
+    ssl_near=None
     for l in lq:
-        if l["t"]=="SSL"and p<=l["p"]+0.05: sc+=2;nt.append("SSL swept")
+        if l["t"]=="SSL"and p<=l["p"]+0.1:
+            d=abs(p-l["p"])
+            if ssl_near is None or d<ssl_near[1]: ssl_near=(l,d)
+    if ssl_near: sc+=2;nt.append("SSL swept")
     if sc>=2: return "BULLISH","; ".join(nt)if nt else"Accumulation"
     elif sc<=-2: return "BEARISH","; ".join(nt)if nt else"Distribution"
     return "NEUTRAL","; ".join(nt)if nt else"Netral"
@@ -172,20 +193,41 @@ def L3(h4t,h1t,bos):
     return "NEUTRAL",f"H4:{h4t} H1:{h1t}"
 
 def L4(cs):
-    if len(cs)<5: return "NEUTRAL","Data kurang"
-    l5=cs[-5:];bu=sum(1 for c in l5 if c["c"]>c["o"]);be=sum(1 for c in l5 if c["c"]<c["o"])
+    if len(cs)<15: return "NEUTRAL","Data kurang"
+    # 15 candle analysis
+    l15=cs[-15:];l5=cs[-5:];l3=cs[-3:]
+    bu15=sum(1 for c in l15 if c["c"]>c["o"]);be15=sum(1 for c in l15 if c["c"]<c["o"])
+    bu5=sum(1 for c in l5 if c["c"]>c["o"]);be5=sum(1 for c in l5 if c["c"]<c["o"])
+    cb3=sum(1 for c in l3 if c["c"]>c["o"]);cr3=sum(1 for c in l3 if c["c"]<c["o"])
+    # Body ratio last candle
     last=cs[-1];bd=abs(last["c"]-last["o"]);tt=last["h"]-last["l"];rt=bd/tt if tt>0 else 0
-    l3=cs[-3:];cb=sum(1 for c in l3 if c["c"]>c["o"]);cr=sum(1 for c in l3 if c["c"]<c["o"])
+    # Avg body ratio 15 candle
+    avg_body=sum(abs(c["c"]-c["o"])for c in l15)/15
+    avg_range=sum(c["h"]-c["l"]for c in l15)/15
+    body_ratio=avg_body/avg_range if avg_range>0 else 0
+    # Momentum: price direction last 5 vs prev 5
+    momentum=cs[-1]["c"]-cs[-5]["c"]
     sc=0;nt=[]
-    if bu>=4: sc+=1;nt.append(f"{bu}/5 bull")
-    elif be>=4: sc-=1;nt.append(f"{be}/5 bear")
+    # 15 candle ratio
+    if bu15>=10: sc+=2;nt.append(f"{bu15}/15 bull")
+    elif bu15>=8: sc+=1;nt.append(f"{bu15}/15 bull")
+    elif be15>=10: sc-=2;nt.append(f"{be15}/15 bear")
+    elif be15>=8: sc-=1;nt.append(f"{be15}/15 bear")
+    # 5 candle short-term
+    if bu5>=4: sc+=1;nt.append(f"{bu5}/5 bull")
+    elif be5>=4: sc-=1;nt.append(f"{be5}/5 bear")
+    # Strong body
     if rt>0.7:
         if last["c"]>last["o"]: sc+=1;nt.append("Strong bull body")
         else: sc-=1;nt.append("Strong bear body")
-    if cb==3: sc+=1;nt.append("3x consecutive bull")
-    elif cr==3: sc-=1;nt.append("3x consecutive bear")
-    if sc>=1: return "BULLISH","; ".join(nt)
-    elif sc<=-1: return "BEARISH","; ".join(nt)
+    # Consecutive
+    if cb3==3: sc+=1;nt.append("3x consecutive bull")
+    elif cr3==3: sc-=1;nt.append("3x consecutive bear")
+    # Momentum
+    if momentum>0: sc+=1;nt.append("Momentum up")
+    elif momentum<0: sc-=1;nt.append("Momentum down")
+    if sc>=2: return "BULLISH","; ".join(nt)
+    elif sc<=-2: return "BEARISH","; ".join(nt)
     return "NEUTRAL","Mixed"
 
 def L5(zn,f):

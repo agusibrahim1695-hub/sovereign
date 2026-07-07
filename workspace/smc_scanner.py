@@ -267,22 +267,32 @@ def run():
             print(f"    RR        : 1:{s['rr']}")
             print(f"    Score     : {s['conf_score']}/5")
 
-            # AUTO LOG + NOTIF
+            # AUTO LOG + NOTIF (only if no open trade for this pair)
             if s['direction'] in ['BUY','SELL']:
                 try:
-                    layers_data = [l[1] for l in r['layers']]
-                    entry_val = float(s['entry'].split('-')[0].strip())
-                    trade_id = log_trade(
-                        pair=r['sym'], direction=s['direction'],
-                        entry=entry_val, sl=float(s['sl']),
-                        tp1=float(s['tp1']), tp2=float(s['tp2']),
-                        rr=float(s['rr']), conviction=s['conf_score'],
-                        grade=grade(r['bull']),
-                        layers=layers_data,
-                        verdict=f"{s['direction']} ({r['bull']}/{r['total']})"
-                    )
-                    print(f"    LOGGED: Trade #{trade_id}")
-                    alert_trade(r['sym'], s['direction'], s['entry'], s['sl'], s['tp1'], s['tp2'], s['rr'], grade(r['bull']))
+                    from trade_journal import get_db as _gdb
+                    _conn = _gdb()
+                    _existing = _conn.execute(
+                        "SELECT id FROM trades WHERE pair=? AND direction=? AND status='OPEN'",
+                        (r['sym'], s['direction'])
+                    ).fetchone()
+                    _conn.close()
+                    if _existing:
+                        print(f"    SKIP: Trade #{_existing[0]} already OPEN")
+                    else:
+                        layers_data = [l[1] for l in r['layers']]
+                        entry_val = float(s['entry'].split('-')[0].strip())
+                        trade_id = log_trade(
+                            pair=r['sym'], direction=s['direction'],
+                            entry=entry_val, sl=float(s['sl']),
+                            tp1=float(s['tp1']), tp2=float(s['tp2']),
+                            rr=float(s['rr']), conviction=s['conf_score'],
+                            grade=grade(r['bull']),
+                            layers=layers_data,
+                            verdict=f"{s['direction']} ({r['bull']}/{r['total']})"
+                        )
+                        print(f"    LOGGED: Trade #{trade_id}")
+                        alert_trade(r['sym'], s['direction'], s['entry'], s['sl'], s['tp1'], s['tp2'], s['rr'], grade(r['bull']))
                 except Exception as e:
                     print(f"    LOG ERR: {e}")
     else:

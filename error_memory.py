@@ -33,6 +33,7 @@ def _extract_pattern(error_msg):
     # Python error patterns
     patterns = [
         (r"ModuleNotFoundError:\s*No module named '([^']+)'", "missing_module"),
+        (r"ModuleNotFoundError:\s*No module named (\S+)", "missing_module"),
         (r"ImportError:\s*cannot import name '([^']+)'", "import_error"),
         (r"SyntaxError:\s*(.+)", "syntax_error"),
         (r"TypeError:\s*(.+)", "type_error"),

@@ -1,3 +1,7 @@
 .env
 __pycache__/
 workspace/*
+memory/
+*.bak_root
+super_memory.db
+usage_log.json

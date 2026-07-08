@@ -5,3 +5,5 @@ memory/
 *.bak_root
 super_memory.db
 usage_log.json
+memory/health-log.json
+memory/error-memory.json

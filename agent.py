@@ -18,6 +18,7 @@ import time
 import json
 import config
 import tools
+import health
 from providers import get_provider
 
 # ═══════════════════════════════════════════════════════
@@ -45,7 +46,7 @@ SYSTEM_PROMPT = """Kamu adalah SOVEREIGN Agent v2.5, asisten sekaligus autonomou
 
 KAPABILITAS:
 1. **Obrolan biasa** — brainstorming, jelasin konsep, ngasih pendapat. JANGAN paksa manggil tool.
-2. **Eksekusi task** — pakai tools: bash_exec, install_package, read_file, write_file, patch_file, list_dir, fetch_url, web_search, search_knowledge, index_file, rebuild_index, rag_stats, task_done.
+2. **Eksekusi task** — pakai tools: bash_exec, install_package, read_file, write_file, patch_file, list_dir, fetch_url, web_search, search_knowledge, index_file, rebuild_index, rag_stats, health_check, task_done.
 
 CARA KERJA:
 - Kerja di dalam folder workspace.
@@ -222,6 +223,13 @@ class Agent:
         # Init system prompt + long-term memory
         self._init_system_prompt()
 
+        # Startup health check — silent auto-fix
+        try:
+            import health as _h
+            _h.full_health_check(auto_fix=True)
+        except Exception:
+            pass  # Don't crash agent if health check fails
+
         if session_name:
             self.load_session(session_name)
 
@@ -284,6 +292,13 @@ class Agent:
             f"📊 {inp}+{out} tokens | ~${cost:.5f} | {elapsed:.1f}s | "
             f"total: ${self.total_cost:.5f}"
         )
+
+    def self_health(self):
+        """Jalankan health check & auto-fix. Returns report string."""
+        result = health.full_health_check(auto_fix=True)
+        report = health.format_report(result)
+        self.notify(report)
+        return report
 
     # ─────────────────────────────────────
     # SMART HISTORY COMPRESSION

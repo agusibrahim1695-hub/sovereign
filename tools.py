@@ -635,6 +635,24 @@ def _dispatch_rag_stats(args): return rag_stats()
 
 
 # ═══════════════════════════════════════════════
+# SELF-HEALTH CHECK TOOL
+# ═══════════════════════════════════════════════
+
+def _dispatch_health(args):
+    try:
+        import health
+        action = args.get("action", "check")
+        if action == "heal":
+            result = health.self_heal()
+            return result["report"]
+        else:
+            result = health.full_health_check(auto_fix=True)
+            return health.format_report(result)
+    except Exception as e:
+        return f"[error] Health check gagal: {e}"
+
+
+# ═══════════════════════════════════════════════
 # SKILL LIBRARY TOOLS
 # ═══════════════════════════════════════════════
 
@@ -707,4 +725,5 @@ DISPATCH = {
     "skill_search": _dispatch_skill_search,
     "skill_list": _dispatch_skill_list,
     "task_done": _dispatch_done,
+    "health_check": _dispatch_health,
 }

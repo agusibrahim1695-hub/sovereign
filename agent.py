@@ -1,101 +1,105 @@
 """
-SOVEREIGN AGENT v2 — SUPER CERDAS + SKILL MUMPUNI
-Enhanced with: Chain-of-Thought, Planning, Self-Reflection, Skills, Memory
+Core agentic loop — SOVEREIGN Agent v2.5
+  1. Kirim task + history ke LLM (dengan daftar tools)
+  2. LLM balas: teks status dan/atau tool_calls
+  3. Kalau ada tool_call risky & mode='confirm' -> tanya user dulu
+  4. Eksekusi tool, hasil dimasukkan lagi ke history
+  5. Ulangi sampai LLM panggil task_done() atau max_iters habis
+
+FEATURES v2.5:
+  - Smart History Compression (auto-summarize pesan lama)
+  - Long-Term Memory (simpan fakta user ke file)
+  - Error Learning (log error & antisipasi di next turn)
+  - Cost Tracker (estimasi biaya per request)
+  - Enhanced System Prompt (RAG-first, chain of thought)
 """
 import os
 import time
 import json
-import threading
 import config
 import tools
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import providers
 from providers import get_provider
-import usage_tracker
 
-# Import Super Intelligence modules
-try:
-    from super_cog import cog
-    from skills import get_skill, list_skills, SKILLS
-    from super_memory import memory, facts, skills_mem, errors, preferences
-    SUPER_ENABLED = True
-except ImportError as e:
-    print(f"⚠️ Super modules not loaded: {e}")
-    SUPER_ENABLED = False
+# ═══════════════════════════════════════════════════════
+# MEMORY PATHS
+# ═══════════════════════════════════════════════════════
+MEMORY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memory")
+USER_PROFILE_PATH = os.path.join(MEMORY_DIR, "user-profile.md")
+os.makedirs(MEMORY_DIR, exist_ok=True)
 
-try:
-    import rag_core
-except ImportError:
-    rag_core = None
+# ═══════════════════════════════════════════════════════
+# COST TABLE (USD per 1K tokens, approx)
+# ═══════════════════════════════════════════════════════
+COST_TABLE = {
+    "llama-3.3-70b-versatile": {"input": 0.00059, "output": 0.00079},
+    "gpt-4o-mini": {"input": 0.00015, "output": 0.00060},
+    "claude-sonnet-4-6": {"input": 0.003, "output": 0.0015},
+    "mimo": {"input": 0.0002, "output": 0.0006},
+    "mimo-v2.5": {"input": 0.0002, "output": 0.0006},
+}
 
-SYSTEM_PROMPT = """Kamu adalah SOVEREIGN Agent v2 — Super Cerdas Autonomous Agent.
+# ═══════════════════════════════════════════════════════
+# SYSTEM PROMPT v2.5 — Optimized
+# ═══════════════════════════════════════════════════════
+SYSTEM_PROMPT = """Kamu adalah SOVEREIGN Agent v2.5, asisten sekaligus autonomous coding/ops agent yang jalan di HP Android (Termux).
 
-KEMAMPUAN SUPER:
-1. **Chain-of-Thought**: Mikir step-by-step sebelum bertindak
-2. **Planning**: Buat rencana sebelum eksekusi  
-3. **Self-Reflection**: Evaluasi hasil kerja sendiri
-4. **Error Learning**: Belajar dari kesalahan
-5. **Skill System**: 12+ skills via get_skill()
-6. **Memory**: Ingat fakta, errors, preferences
+KAPABILITAS:
+1. **Obrolan biasa** — brainstorming, jelasin konsep, ngasih pendapat. JANGAN paksa manggil tool.
+2. **Eksekusi task** — pakai tools: bash_exec, install_package, read_file, write_file, patch_file, list_dir, fetch_url, web_search, search_knowledge, index_file, rebuild_index, rag_stats, task_done.
 
-WORKFLOW:
-1. OBSERVE: Amati task, assess complexity
-2. THINK: Analisis kebutuhan tools
-3. PLAN: Step-by-step plan dengan fallback
-4. ACT: Eksekusi dengan tool tepat
-5. REFLECT: Evaluasi, catat lessons
+CARA KERJA:
+- Kerja di dalam folder workspace.
+- Kalau butuh library, install sendiri pakai install_package.
+- Kalau ada error: baca error-nya, pahami, perbaiki, coba lagi. JANGAN menyerah di percobaan pertama.
+- Kalau user cuma ngobrol, jangan panggil task_done.
 
-TOOLS (13): bash_exec, install_package, write_file, patch_file, read_file,
-list_dir, fetch_url, web_search, search_knowledge, index_file,
-rebuild_index, rag_stats, task_done
+⚠️ MANDATORY: TEST-BEFORE-DONE
+Sebelum panggil task_done, WAJIB jalankan verifikasi:
+- File Python: `python -m py_compile <file>` atau `python -c "import <module>"`
+- File JS/TS: `node -c <file>`
+- Shell script: `bash -n <file>`
+- API/server: `curl localhost:<port>/health` atau run script-nya
+- Script apapun: coba run dulu, pastikan gak error
+Kalau verifikasi GAGAL → perbaiki dulu, jangan panggil task_done.
+Hanya panggil task_done kalau verifikasi LULUS atau task memang cuma diskusi/tulisan.
 
-PRINSIP:
-- Kalau ragu, tanya dulu
-- Kalau error, perbaiki, coba lagi
-- Kalau kompleks, breakdown jadi sub-task
-- Catat error patterns
+STRATEGI RESEARCH (untuk pertanyaan/riset):
+- **Step 1**: search_knowledge() — cek knowledge base RAG dulu
+- **Step 2**: Kalau kurang, pakai read_file() atau fetch_url() 
+- **Step 3**: Kalau masih kurang, pakai web_search() untuk info terkini
+- **Step 4**: Kalau menemukan info baru, index_file() biar ke-save
 
-Jawab dalam Bahasa Indonesia santai, to the point.
-"""
+SKILL LIBRARY:
+- Kalau dapat task, cek dulu ada skill yang cocok: skill_search("keyword") atau skill_list()
+- Kalau ada skill yang cocok: skill_load("nama skill") → ikuti langkah-langkahnya
+- Kalau selesai task dan hasilnya bagus + bisa dipakai lagi: skill_save() buat next time
+- Ini bikin kerja lebih cepat & konsisten, gak mikir dari nol tiap kali
 
+CHAIN OF THOUGHT: Sebelum eksekusi, pahami → cek skill → rencanakan → eksekusi → verifikasi.
+Jawab dalam Bahasa Indonesia santai, to the point."""
+
+# ═══════════════════════════════════════════════════════
+# TOOL LABELS (tampilan ramah ke user)
+# ═══════════════════════════════════════════════════════
 TOOL_LABELS = {
-    "bash_exec": "Menjalankan perintah",
-    "install_package": "Menginstall package",
-    "write_file": "Menulis file",
-    "patch_file": "Mengedit bagian file",
-    "read_file": "Membaca file",
-    "list_dir": "Melihat isi folder",
-    "fetch_url": "Mengambil data dari web",
-    "web_search": "Mencari di internet",
-    "search_knowledge": "Mencari di knowledge base",
-    "index_file": "Index file ke RAG",
-    "rebuild_index": "Rebuild RAG",
-    "rag_stats": "Statistik RAG",
-    "task_done": "Task selesai",
+    "bash_exec": "🔧 Menjalankan perintah",
+    "install_package": "📦 Menginstall package",
+    "write_file": "📝 Menulis file",
+    "read_file": "📖 Membaca file",
+    "patch_file": "🩹 Edit sebagian file",
+    "list_dir": "📂 Melihat isi folder",
+    "fetch_url": "🌐 Mengambil data dari web",
+    "web_search": "🔍 Mencari di internet",
+    "search_knowledge": "🧠 Cari knowledge base",
+    "index_file": "📚 Index file ke RAG",
+    "rebuild_index": "🔄 Rebuild index RAG",
+    "rag_stats": "📊 Stats RAG",
 }
-
-TOOL_ICONS = {
-    "bash_exec": "⚡",
-    "install_package": "📦",
-    "write_file": "📝",
-    "patch_file": "✏️",
-    "read_file": "📖",
-    "list_dir": "📂",
-    "fetch_url": "🌐",
-    "web_search": "🔍",
-    "search_knowledge": "📚",
-    "index_file": "📇",
-    "rebuild_index": "🔄",
-    "rag_stats": "📊",
-    "task_done": "✅",
-}
-
-_print_lock = threading.Lock()
 
 
 def _tool_label(name, args):
     base = TOOL_LABELS.get(name, name)
-    if name in ("write_file", "read_file", "patch_file"):
+    if name in ("write_file", "read_file", "patch_file", "index_file"):
         p = args.get("path", "")
         return f"{base}: {p}" if p else base
     if name == "install_package":
@@ -103,18 +107,104 @@ def _tool_label(name, args):
         return f"{base}: {pkg}" if pkg else base
     if name == "fetch_url":
         url = args.get("url", "")
-        return f"{base}: {url}" if url else base
+        short = url[:60] + "..." if len(url) > 60 else url
+        return f"{base}: {short}" if url else base
     if name == "web_search":
+        q = args.get("query", "")
+        return f"{base}: {q}" if q else base
+    if name == "search_knowledge":
         q = args.get("query", "")
         return f"{base}: {q}" if q else base
     return base
 
 
+# ═══════════════════════════════════════════════════════
+# LONG-TERM MEMORY
+# ═══════════════════════════════════════════════════════
+def _load_user_profile():
+    """Load long-term memory dari file."""
+    if not os.path.exists(USER_PROFILE_PATH):
+        return ""
+    try:
+        with open(USER_PROFILE_PATH, "r") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
+def _save_user_profile(content):
+    """Simpan long-term memory ke file."""
+    try:
+        with open(USER_PROFILE_PATH, "w") as f:
+            f.write(content)
+    except Exception as e:
+        print(f"⚠️ gagal simpan user profile: {e}")
+
+
+def _append_user_profile(fact):
+    """Tambah 1 fakta baru ke user profile."""
+    existing = _load_user_profile()
+    if fact in existing:
+        return  # sudah ada, jangan duplikat
+    if existing:
+        updated = existing + "\n- " + fact
+    else:
+        updated = "# User Profile\n\nFakta tentang user:\n- " + fact
+    _save_user_profile(updated)
+
+
+# ═══════════════════════════════════════════════════════
+# ERROR MEMORY (via error_memory.py)
+# ═══════════════════════════════════════════════════════
+def _get_error_memory():
+    """Lazy import error memory."""
+    try:
+        import error_memory
+        return error_memory.get_error_memory()
+    except Exception:
+        return None
+
+
+def _log_error_smart(error_msg, context="", solution_tried="", success=False):
+    """Log error ke structured memory + ambil saran."""
+    mem = _get_error_memory()
+    if mem:
+        mem.remember(error_msg, context, solution_tried, success)
+        return mem.get_suggestion(error_msg)
+    return None
+
+
+def _check_action_warning(action_desc):
+    """Cek apakah action ini punya risiko error berdasarkan memory."""
+    mem = _get_error_memory()
+    if mem:
+        return mem.check_before_action(action_desc)
+    return None
+
+
+# ═══════════════════════════════════════════════════════
+# ERROR LEARNING — via error_memory.py
+# ═══════════════════════════════════════════════════════
+# (sudah ada di _get_error_memory, _log_error_smart, _check_action_warning)
+
+
+# ═══════════════════════════════════════════════════════
+# COST TRACKER
+# ═══════════════════════════════════════════════════════
+def _estimate_cost(usage, model="llama-3.3-70b-versatile"):
+    """Estimasi biaya dalam USD."""
+    costs = COST_TABLE.get(model, COST_TABLE["llama-3.3-70b-versatile"])
+    input_cost = (usage.get("input", 0) / 1000) * costs["input"]
+    output_cost = (usage.get("output", 0) / 1000) * costs["output"]
+    return input_cost + output_cost
+
+
+# ═══════════════════════════════════════════════════════
+# AGENT CLASS
+# ═══════════════════════════════════════════════════════
 class Agent:
     def __init__(self, provider_name=None, mode="confirm", notify=print, ask_confirm=None,
-                 session_name=None, auto_trim_ratio=0.75, stream=True,
-                 on_token=None, on_stream_start=None,
-                 on_tool_start=None, on_tool_end=None):
+                 session_name=None, auto_trim_ratio=0.65):
         self.provider_name = provider_name or config.DEFAULT_PROVIDER
         self.provider = get_provider(provider_name)
         self.mode = mode
@@ -122,124 +212,139 @@ class Agent:
         self.ask_confirm = ask_confirm or (lambda name, args: True)
         self.session_name = session_name
         self.auto_trim_ratio = auto_trim_ratio
-        self.stream = stream
-        self.on_token = on_token or (lambda piece: print(piece, end="", flush=True))
-        self.on_stream_start = on_stream_start or (lambda: None)
-        self.on_tool_start = on_tool_start
-        self.on_tool_end = on_tool_end
-        self.notify_stats = lambda: None
-
-        # Super Intelligence
-        self.cog = cog if SUPER_ENABLED else None
-        self.super_memory = memory if SUPER_ENABLED else None
-
-        self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        self.stop_requested = False
+        self.messages = []
         self.session_tokens = 0
+        self.total_cost = 0.0
         self.last_usage = {"input": 0, "output": 0, "total": 0}
         self.last_elapsed = 0.0
-        self.stop_requested = False
-        self.task_id = None
+
+        # Init system prompt + long-term memory
+        self._init_system_prompt()
 
         if session_name:
             self.load_session(session_name)
 
+    def _init_system_prompt(self):
+        """Build system prompt dengan long-term memory & error context."""
+        parts = [SYSTEM_PROMPT]
+
+        # Tambah long-term memory
+        profile = _load_user_profile()
+        if profile:
+            parts.append(f"\n\nLONG-TERM MEMORY:\n{profile}")
+
+        # Tambah error memory warnings (biar agent aware error yang sering terjadi)
+        mem = _get_error_memory()
+        if mem:
+            warnings = mem.get_context_warnings()
+            if warnings:
+                parts.append(
+                    "\n\n⚠️ ERROR MEMORY — hindari error berikut:\n" 
+                    + "\n".join(warnings)
+                )
+
+        self.messages = [{"role": "system", "content": "\n".join(parts)}]
+
     def reset(self):
-        self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        """Mulai obrolan/task baru, buang history lama tapi tetep pake memory."""
+        self._init_system_prompt()
         self.session_tokens = 0
-        self.last_usage = {"input": 0, "output": 0, "total": 0}
-        self.last_elapsed = 0.0
-        self.task_id = None
-
-    def stop(self):
-        self.stop_requested = True
-
-    # FIX BUG #2: method-method di bawah ini dulu gak ada di class Agent,
-    # padahal dipanggil dari chat.py (/mode, /use, /provider, /model,
-    # /chatai, /codeai, /stop) -> AttributeError tiap command itu dipakai.
-
-    def set_provider(self, name):
-        """Ganti provider aktif secara live (dipakai /use, /provider, /model, /chatai, /codeai)."""
-        self.provider = get_provider(name)
-        self.provider_name = name
-
-    def set_mode(self, mode):
-        """Ganti mode eksekusi tool: 'auto' atau 'confirm' (dipakai /mode)."""
-        if mode not in ("auto", "confirm"):
-            raise ValueError(f"mode tidak dikenal: {mode}")
-        self.mode = mode
+        self.total_cost = 0.0
 
     def request_stop(self):
-        """Alias untuk stop(), dipanggil dari chat.py command /stop."""
+        """User minta stop."""
         self.stop_requested = True
+        self.notify("🛑 Stop requested...")
 
-    # ========== SUPER COGNITION ==========
+    def set_provider(self, provider_name):
+        self.provider = get_provider(provider_name)
+        self.provider_name = provider_name
 
-    def think_before_act(self, task):
-        """Chain-of-Thought: observe, think, plan."""
-        if not self.cog:
-            return None
-        self.cog.reset()
-        observation = self.cog.observe(task)
-        thoughts = self.cog.think(observation)
-        plan = self.cog.create_plan(observation, thoughts)
-        return {"observation": observation, "thoughts": thoughts, "plan": plan}
+    def set_mode(self, mode):
+        if mode not in ("auto", "confirm"):
+            raise ValueError("mode harus 'auto' atau 'confirm'")
+        self.mode = mode
 
-    def reflect_after_act(self, result, success):
-        """Self-Reflection: evaluasi hasil."""
-        if not self.cog:
-            return None
-        reflection = self.cog.reflect(result, success)
-        if not success and SUPER_ENABLED:
-            errors.remember_error(str(result)[:200])
-        return reflection
-
-    def use_skill(self, skill_name, *args, **kwargs):
-        """Pakai skill dari registry."""
-        if not SUPER_ENABLED:
-            return "[error] Super modules not available"
-        skill_func = get_skill(skill_name)
-        if skill_func:
-            result = skill_func(*args, **kwargs)
-            skills_mem.remember_skill(skill_name, str(args[:2]))
-            return result
-        return f"[error] Skill '{skill_name}' not found"
-
-    # ========== CORE AGENT ==========
-
+    # ─────────────────────────────────────
+    # TOKEN & COST ESTIMATION
+    # ─────────────────────────────────────
     def _estimate_tokens(self, messages):
         total_chars = sum(len(json.dumps(m, ensure_ascii=False)) for m in messages)
-        return total_chars // 3
+        return total_chars // 4
 
-    def _compress_messages(self, messages):
-        if len(messages) <= 6:
-            return messages
-        recent = messages[-3:]
-        old = messages[:-3]
+    def _notify_stats(self):
+        """Notifikasi ringkas: token usage + estimated cost."""
+        cost = _estimate_cost(self.last_usage, self.provider.model)
+        self.total_cost += cost
+        inp = self.last_usage.get("input", 0)
+        out = self.last_usage.get("output", 0)
+        elapsed = self.last_elapsed
+        self.notify(
+            f"📊 {inp}+{out} tokens | ~${cost:.5f} | {elapsed:.1f}s | "
+            f"total: ${self.total_cost:.5f}"
+        )
+
+    # ─────────────────────────────────────
+    # SMART HISTORY COMPRESSION
+    # ─────────────────────────────────────
+    def _compress_history(self, keep_recent=10):
+        """Compress pesan lama jadi ringkasan singkat."""
+        system = self.messages[0]
+        rest = self.messages[1:]
+
+        if len(rest) <= keep_recent + 4:
+            return  # belum perlu compress
+
+        to_compress = rest[:-keep_recent]
+        keep = rest[-keep_recent:]
+
+        # Buat ringkasan dari pesan yang mau di-compress
         summary_parts = []
-        for msg in old:
+        for msg in to_compress:
             role = msg.get("role", "")
-            content = msg.get("content", "")
-            if not content:
-                continue
             if role == "user":
-                summary_parts.append(f"User: {content[:150]}")
-            elif role == "assistant":
-                summary_parts.append(f"AI: {content[:150]}")
-            elif role == "tool":
-                summary_parts.append(f"Tool: {content[:100]}")
-        summary = " | ".join(summary_parts[-10:])
-        compressed = [{"role": "user", "content": f"[Ringkasan percakapan sebelumnya]: {summary}"}]
-        return compressed + recent
+                content = msg.get("content", "")[:100]
+                summary_parts.append(f"User: {content}")
+            elif role == "assistant" and not msg.get("tool_calls"):
+                content = msg.get("content", "")[:150]
+                if content:
+                    summary_parts.append(f"AI: {content}")
+            elif role == "assistant" and msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    name = tc.get("function", {}).get("name", "")
+                    summary_parts.append(f"[tool: {name}]")
+
+        if not summary_parts:
+            self.messages = [system] + keep
+            return
+
+        summary = "[HISTORI RINGKASAN]\n" + "\n".join(summary_parts[-15:])
+        compressed = [
+            system,
+            {"role": "user", "content": f"[Sistem: Berikut ringkasan percakapan sebelumnya]\n{summary}"},
+            {"role": "assistant", "content": "Oke, gue udah tangkap konteksnya. Lanjut!"},
+        ]
+
+        self.messages = compressed + keep
+        self.notify("🗜️ history dikompress (pesan lama di-ringkasan)")
 
     def _trim_history(self):
+        """Trim history kalau udah kelebihan context window."""
         limit = int(self.provider.context_window * self.auto_trim_ratio)
-        if self._estimate_tokens(self.messages) <= limit:
+        tokens = self._estimate_tokens(self.messages)
+
+        if tokens <= limit:
             return
-        compressed = self._compress_messages(self.messages)
-        if self._estimate_tokens(compressed) <= limit:
-            self.messages = compressed
-            self.notify("ℹ️ history dikompresi (hemat token!)")
+
+        # Coba compress dulu
+        self._compress_history(keep_recent=8)
+        tokens = self._estimate_tokens(self.messages)
+
+        if tokens <= limit:
             return
+
+        # Kalau masih kelebihan, pangkas dari yang paling lama
         system = self.messages[0]
         rest = self.messages[1:]
         while rest and self._estimate_tokens([system] + rest) > limit:
@@ -249,209 +354,276 @@ class Agent:
                 for _ in range(n_calls):
                     if rest and rest[0].get("role") == "tool":
                         rest.pop(0)
+
         self.messages = [system] + rest
-        self.notify("⚠️ history dipotong")
+        self.notify("✂️ history dipangkas (terlalu besar untuk context window)")
 
-    def _execute_single_tool(self, name, args):
-        try:
-            if name in tools.DISPATCH:
-                result = tools.DISPATCH[name](args)
-                return (name, result, True)
-            return (name, f"[error] tool '{name}' tidak dikenal", False)
-        except Exception as e:
-            return (name, f"[error] {e}", False)
+    # ─────────────────────────────────────
+    # TEST-BEFORE-DONE VERIFICATION
+    # ─────────────────────────────────────
+    _VERIFY_KEYWORDS = [
+        "py_compile", "py.test", "pytest", "unittest",
+        "node -c", "node --check",
+        "bash -n",
+        "curl", "wget",
+        "python -c", "python3 -c",
+        "import ",
+        "test_", "_test.",
+        "lint", "check", "verify",
+        "mypy", "ruff", "flake8", "black",
+    ]
 
-    def _execute_tool_calls(self, tool_calls):
-        READ_ONLY = {"read_file", "list_dir", "fetch_url", "web_search",
-                     "search_knowledge", "rag_stats"}
-        RISKY = {"bash_exec", "write_file", "install_package", "patch_file", "rebuild_index"}
+    _DISCUSS_KEYWORDS = [
+        "ngobrol", "diskusi", "jelasin", "penjelasan", "opini",
+        "brainstorm", "saran", "rekomendasi", "ringkasan",
+        "tanya jawab", "curhat", "diskusi",
+    ]
 
-        safe = []
-        risky = []
-        for tc in tool_calls:
-            name = tc["name"]
-            args = tc.get("arguments", {})
-            if name in RISKY:
-                risky.append((name, args, tc))
-            else:
-                safe.append((name, args, tc))
+    def _has_verification(self):
+        """Cek apakah ada verifikasi/test di recent tool calls."""
+        recent = self.messages[-15:]
+        for msg in recent:
+            if msg.get("role") != "assistant":
+                continue
+            if not msg.get("tool_calls"):
+                continue
+            for tc in msg["tool_calls"]:
+                func = tc.get("function", {})
+                name = func.get("name", "")
+                args_str = func.get("arguments", "{}")
+                if isinstance(args_str, str):
+                    try:
+                        args = json.loads(args_str)
+                    except Exception:
+                        continue
+                else:
+                    args = args_str
 
-        results = []
-
-        # Parallel read-only
-        if safe:
-            start_times = {n: time.time() for n, a, tc in safe}
-            with ThreadPoolExecutor(max_workers=min(len(safe), 4)) as executor:
-                futures = {executor.submit(self._execute_single_tool, n, a): (n, a, tc)
-                          for n, a, tc in safe}
-                for future in as_completed(futures):
-                    n, result, success = future.result()
-                    elapsed = time.time() - start_times.get(n, time.time())
-                    matching_args = next((a for nn, a, tc in safe if nn == n), {})
-                    if self.on_tool_end:
-                        self.on_tool_end(TOOL_ICONS.get(n, "🔧"), _tool_label(n, matching_args), elapsed, success)
-                    results.append({"tool": n, "result": result, "success": success})
-
-        # Sequential risky
-        for name, args, tc in risky:
-            if self.on_tool_start:
-                self.on_tool_start(TOOL_ICONS.get(name, "🔧"), _tool_label(name, args))
-
-            start = time.time()
-
-            if name in RISKY and self.mode == "confirm":
-                allowed = self.ask_confirm(name, args)
-                if not allowed:
-                    results.append({"tool": name, "result": "[dibatalkan]", "success": False})
-                    if self.on_tool_end:
-                        self.on_tool_end("🚫", _tool_label(name, args), time.time() - start, False)
-                    continue
-
-            _, result, success = self._execute_single_tool(name, args)
-            elapsed = time.time() - start
-
-            if self.on_tool_end:
-                self.on_tool_end(TOOL_ICONS.get(name, "🔧"), _tool_label(name, args), elapsed, success)
-
-            results.append({"tool": name, "result": result, "success": success})
-
-            if not success and SUPER_ENABLED:
-                errors.remember_error(result[:100])
-
-        return results
-
-    def _step(self, max_iters=1):
-        if self.stream:
-            self.on_stream_start()
-        resp = self.provider.chat(
-            self.messages, tools.TOOLS_SCHEMA,
-            on_token=self.on_token if self.stream else None
-        )
-
-        # Auto router: track which provider actually answered
-        if hasattr(self.provider, 'current_name') and self.provider.current_name:
-            self.provider_name = self.provider.current_name
-            self.provider = providers.get_provider(self.provider_name)
-
-        usage = resp.get("usage", {})
-        self.last_usage = usage
-        self.session_tokens += usage.get("total", 0)
-        usage_tracker.log_usage(
-            self.provider_name,
-            getattr(self.provider, 'model', 'unknown'),
-            usage.get("input", 0),
-            usage.get("output", 0)
-        )
-
-        content = resp.get("content", "")
-        tool_calls = resp.get("tool_calls", [])
-
-        if content:
-            if self.stream:
-                print()
-                self.notify_stats()
-            self.messages.append({"role": "assistant", "content": content})
-
-        if not tool_calls:
-            return True
-
-        assistant_msg = {"role": "assistant", "content": content or ""}
-        assistant_msg["tool_calls"] = [
-            {"id": tc["id"], "type": "function",
-             "function": {"name": tc["name"], "arguments": json.dumps(tc["arguments"])}}
-            for tc in tool_calls
-        ]
-        if not content:
-            self.messages.pop()
-        self.messages.append(assistant_msg)
-
-        if self.on_tool_start and tool_calls:
-            for tc in tool_calls:
-                self.on_tool_start(TOOL_ICONS.get(tc["name"], "🔧"),
-                                  _tool_label(tc["name"], tc.get("arguments", {})))
-
-        results = self._execute_tool_calls(tool_calls)
-
-        for res in results:
-            self.messages.append({
-                "role": "tool",
-                "tool_call_id": next(
-                    (tc["id"] for tc in tool_calls if tc["name"] == res["tool"]),
-                    "unknown"
-                ),
-                "content": res["result"]
-            })
-
+                if name == "bash_exec":
+                    cmd = args.get("command", "").lower()
+                    for kw in self._VERIFY_KEYWORDS:
+                        if kw in cmd:
+                            return True
+                if name == "read_file":
+                    return True
         return False
 
-    def chat(self, task, max_iters=None):
-        if max_iters is None:
-            max_iters = config.MAX_ITERS
+    def _check_task_done(self, args):
+        """Cek apakah task_done boleh dipanggil. Return (allowed, reason)."""
+        summary = args.get("summary", "").lower()
+        for kw in self._DISCUSS_KEYWORDS:
+            if kw in summary:
+                return True, "discuss_only"
+        if self._has_verification():
+            return True, "verified"
+        return False, "no_verification"
 
-        # THINK BEFORE ACT
-        if SUPER_ENABLED and self.cog:
-            thinking = self.think_before_act(task)
-            if thinking:
-                confidence = self.cog.get_confidence()
-                self.notify(f"🧠 Thinking... (confidence: {confidence:.0%})")
+    # ─────────────────────────────────────
+    # SESSION SAVE/LOAD
+    # ─────────────────────────────────────
+    def save_session(self, name=None):
+        name = name or self.session_name
+        if not name:
+            return
+        path = os.path.join(config.SESSIONS_DIR, f"{name}.json")
+        try:
+            # Simpan history aja, system prompt akan di-rebuild saat load
+            save_data = [m for m in self.messages if m.get("role") != "system"]
+            with open(path, "w") as f:
+                json.dump(save_data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.notify(f"⚠️ gagal simpan session: {e}")
 
-        self.messages.append({"role": "user", "content": task})
+    def load_session(self, name):
+        path = os.path.join(config.SESSIONS_DIR, f"{name}.json")
+        if not os.path.exists(path):
+            self.session_name = name
+            return
+        try:
+            with open(path, "r") as f:
+                saved_messages = json.load(f)
+            # Rebuild system prompt + append history lama
+            self._init_system_prompt()
+            self.messages.extend(saved_messages)
+            self.session_name = name
+            self.notify(f"📂 session '{name}' dimuat ({len(saved_messages)} pesan).")
+        except Exception as e:
+            self.notify(f"⚠️ gagal load session: {e}")
 
-        finished = False
-        iterations = 0
-        extensions = config.MAX_ITER_EXTENSIONS
-
-        while not finished and iterations < max_iters:
-            iterations += 1
-            self._trim_history()
+    # ─────────────────────────────────────
+    # AGENTIC LOOP
+    # ─────────────────────────────────────
+    def _step(self, max_iters):
+        """Loop internal: proses messages sampai AI berhenti atau task_done."""
+        for iteration in range(max_iters):
             if self.stop_requested:
-                self.notify("🛑 STOP diminta.")
+                self.notify("🛑 Dihentikan oleh user.")
                 self.stop_requested = False
-                return True
-            finished = self._step(max_iters)
+                return
 
-        if not finished and extensions > 0:
-            while not finished and extensions > 0:
-                extensions -= 1
-                self.notify(f"🔄 Lanjut... (sisa: {extensions})")
-                finished = self._step(max_iters)
+            self._trim_history()
+            try:
+                start = time.time()
+                resp = self.provider.chat(self.messages, tools.TOOLS_SCHEMA)
+                self.last_elapsed = time.time() - start
+            except Exception as e:
+                self.notify(f"❌ Error manggil provider: {e}")
+                _log_error_smart(str(e), f"provider:{self.provider_name}")
+                return
 
-        # REFLECT AFTER ACT
-        if SUPER_ENABLED and self.cog:
-            self.reflect_after_act("Done" if finished else "Incomplete", finished)
+            usage = resp.get("usage") or {}
+            self.last_usage = usage
+            self.session_tokens += usage.get("total", 0)
 
-    def run(self, task, max_iters=None):
+            if resp["content"]:
+                self.notify(resp["content"])
+
+            # Tampilkan stats
+            self._notify_stats()
+
+            if not resp["tool_calls"]:
+                self.messages.append({"role": "assistant", "content": resp["content"]})
+                return
+
+            # Build assistant message dengan tool_calls
+            assistant_msg = {
+                "role": "assistant",
+                "content": resp["content"],
+                "tool_calls": [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {"name": tc["name"], "arguments": json.dumps(tc["arguments"])},
+                    }
+                    for tc in resp["tool_calls"]
+                ],
+            }
+            self.messages.append(assistant_msg)
+
+            done = False
+            for tc in resp["tool_calls"]:
+                if self.stop_requested:
+                    self.notify("🛑 Dihentikan oleh user.")
+                    done = True
+                    break
+
+                name, args, call_id = tc["name"], tc["arguments"], tc["id"]
+
+                if name == "task_done":
+                    # ⚠️ TEST-BEFORE-DONE ENFORCEMENT
+                    allowed, reason = self._check_task_done(args)
+                    if not allowed:
+                        summary = args.get("summary", "(tanpa ringkasan)")
+                        self.notify(
+                            f"⚠️ task_done DITOLAK — belum ada verifikasi!\n"
+                            f"   Ringkasan: {summary}\n"
+                            f"   → Jalankan test/verifikasi dulu, lalu panggil task_done lagi."
+                        )
+                        # Inject feedback ke history biar AI tau kenapa ditolak
+                        self.messages.append({
+                            "role": "tool",
+                            "tool_call_id": call_id,
+                            "content": (
+                                "[DENIED] task_done ditolak karena belum ada verifikasi. "
+                                "Sebelum klaim selesai, WAJIB jalankan verifikasi dulu: "
+                                "- File Python: python -m py_compile <file> atau python -c 'import ...'\n"
+                                "- File JS: node -c <file>\n"
+                                "- Shell: bash -n <file>\n"
+                                "- API/Server: curl localhost:<port>/health\n"
+                                "- Atau minimal baca file hasilnya (read_file) buat mastiin isinya bener.\n"
+                                "Setelah verifikasi LULUS, baru panggil task_done lagi."
+                            ),
+                        })
+                        continue  # Jangan set done=True, lanjut loop
+
+                    summary = args.get("summary", "(tanpa ringkasan)")
+                    verify_icon = "✅" if reason == "verified" else "💬"
+                    self.notify(f"{verify_icon} SELESAI: {summary}")
+                    self.messages.append({"role": "tool", "tool_call_id": call_id, "content": "ok"})
+                    done = True
+                    continue
+
+                # Handle memory commands
+                if name == "bash_exec":
+                    cmd = args.get("command", "")
+                    if cmd.strip() == "/stop":
+                        self.request_stop()
+                        done = True
+                        break
+
+                label = _tool_label(name, args)
+
+                if name not in tools.DISPATCH:
+                    result = f"[error] tool '{name}' tidak dikenal"
+                    self.notify(f"⚠️ {label} gagal (tool tidak dikenal)")
+                else:
+                    self.notify(f"⏳ {label}...")
+                    try:
+                        if self.mode == "confirm" and name in tools.RISKY_TOOLS:
+                            allowed = self.ask_confirm(name, args)
+                            if not allowed:
+                                result = "[ditolak user] eksekusi dibatalkan"
+                                self.notify(f"🚫 {label} dibatalkan")
+                            else:
+                                result = tools.DISPATCH[name](args)
+                        else:
+                            result = tools.DISPATCH[name](args)
+                    except Exception as e:
+                        result = f"[error] {e}"
+                        self.notify(f"⚠️ {label} error: {e}")
+                        suggestion = _log_error_smart(str(e), name)
+                        if suggestion:
+                            self.notify(suggestion)
+
+                # Log error kalau result error
+                result_str = str(result)
+                if result_str.startswith("[error]"):
+                    suggestion = _log_error_smart(result_str, name)
+                    if suggestion:
+                        self.notify(suggestion)
+
+                self.messages.append({"role": "tool", "tool_call_id": call_id, "content": result_str})
+
+            if done:
+                return
+
+        self.notify("⏰ max_iters tercapai, mungkin belum selesai total.")
+
+    # ─────────────────────────────────────
+    # SKILL AUTO-INJECT
+    # ─────────────────────────────────────
+    def _check_relevant_skills(self, task_description):
+        """Cek apakah ada skill yang relevan, return context string atau None."""
+        try:
+            import skills
+            lib = skills.get_skill_library()
+            return lib.get_relevant_skills(task_description)
+        except Exception:
+            return None
+
+    def chat(self, user_input: str, max_iters: int = None):
+        """Mode diskusi: history persisten, dipanggil berkali-kali."""
+        if self.stop_requested:
+            self.stop_requested = False
+
+        max_iters = max_iters or config.MAX_ITERS
+
+        # Auto-inject relevant skills
+        skill_context = self._check_relevant_skills(user_input)
+        if skill_context:
+            self.messages.append({"role": "user", "content": user_input})
+            # Tambah skill context setelah user message
+            self.messages.append({
+                "role": "system",
+                "content": f"[SISTEM] {skill_context}"
+            })
+        else:
+            self.messages.append({"role": "user", "content": user_input})
+
+        self._step(max_iters)
+        self.save_session()
+
+    def run(self, task: str, max_iters: int = None):
+        """Mode one-shot: reset dulu baru jalanin satu task."""
         self.reset()
         self.chat(task, max_iters=max_iters)
-
-    # ========== SESSION ==========
-
-    def save_session(self, path=None):
-        if not path:
-            path = os.path.join(config.SESSIONS_DIR, f"{self.session_name}.json")
-        data = {
-            "messages": self.messages,
-            "session_tokens": self.session_tokens,
-            "provider_name": self.provider_name,
-            "mode": self.mode
-        }
-        if SUPER_ENABLED and self.super_memory:
-            data["memory_stats"] = self.super_memory.get_stats()
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, 'w') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        self.notify(f"💾 Session saved: {path}")
-
-    def load_session(self, path=None):
-        if not path:
-            path = os.path.join(config.SESSIONS_DIR, f"{self.session_name}.json")
-        if not os.path.exists(path):
-            self.notify(f"⚠️ Session not found: {path}")
-            return
-        with open(path, 'r') as f:
-            data = json.load(f)
-        self.messages = data.get("messages", [{"role": "system", "content": SYSTEM_PROMPT}])
-        self.session_tokens = data.get("session_tokens", 0)
-        self.provider_name = data.get("provider_name", self.provider_name)
-        self.mode = data.get("mode", self.mode)
-        self.notify(f"📂 Session loaded: {path}")

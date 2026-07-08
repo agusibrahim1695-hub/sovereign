@@ -16,8 +16,8 @@
   "2026-07-08": {
     "mimo": {
       "model": "mimo-v2.5",
-      "input": 18868792,
-      "output": 149425,
+      "input": 19367470,
+      "output": 149895,
       "cost": 0.0
     },
     "cerebras": {

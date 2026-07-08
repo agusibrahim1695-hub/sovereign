@@ -1,0 +1,36 @@
+{
+  "2026-07-07": {
+    "custom": {
+      "model": "mimo-v2.5",
+      "input": 3257872,
+      "output": 15727,
+      "cost": 0.0
+    },
+    "mimo": {
+      "model": "mimo-v2.5",
+      "input": 11745263,
+      "output": 55348,
+      "cost": 0.0
+    }
+  },
+  "2026-07-08": {
+    "mimo": {
+      "model": "mimo-v2.5",
+      "input": 15039047,
+      "output": 123488,
+      "cost": 0.0
+    },
+    "cerebras": {
+      "model": "gpt-oss-120b",
+      "input": 920,
+      "output": 60,
+      "cost": 0.0
+    },
+    "groq": {
+      "model": "llama-3.3-70b-versatile",
+      "input": 2029,
+      "output": 21,
+      "cost": 0.0012136999999999998
+    }
+  }
+}

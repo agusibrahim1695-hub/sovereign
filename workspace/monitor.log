@@ -1,13 +1,7 @@
 
 ==================================================
-  PRICE MONITOR STARTED
+  MONITOR v6 (entry/SL/TP + VOID)
   Checking every 10s
-  Press Ctrl+C to stop
+  VOID threshold: 50 pips
 ==================================================
 
-  [16:52:07] Checking 2 open trades...
-  USD/JPY: 161.950
-  EUR/USD: 1.143
-  [16:52:19] Checking 2 open trades...
-  USD/JPY: 161.965
-  EUR/USD: 1.143

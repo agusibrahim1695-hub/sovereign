@@ -254,8 +254,8 @@ class Agent:
 
     def _execute_single_tool(self, name, args):
         try:
-            if name in tools.DISPATCH:
-                result = tools.DISPATCH[name](args)
+            if name in tools.TOOL_REGISTRY:
+                result = tools.TOOL_REGISTRY[name](args)
                 return (name, result, True)
             return (name, f"[error] tool '{name}' tidak dikenal", False)
         except Exception as e:
@@ -280,16 +280,13 @@ class Agent:
 
         # Parallel read-only
         if safe:
-            start_times = {n: time.time() for n, a, tc in safe}
             with ThreadPoolExecutor(max_workers=min(len(safe), 4)) as executor:
                 futures = {executor.submit(self._execute_single_tool, n, a): (n, a, tc)
                           for n, a, tc in safe}
                 for future in as_completed(futures):
                     n, result, success = future.result()
-                    elapsed = time.time() - start_times.get(n, time.time())
-                    matching_args = next((a for nn, a, tc in safe if nn == n), {})
                     if self.on_tool_end:
-                        self.on_tool_end(TOOL_ICONS.get(n, "🔧"), _tool_label(n, matching_args), elapsed, success)
+                        self.on_tool_end(TOOL_ICONS.get(n, "🔧"), _tool_label(n, {}))
                     results.append({"tool": n, "result": result, "success": success})
 
         # Sequential risky
@@ -297,21 +294,18 @@ class Agent:
             if self.on_tool_start:
                 self.on_tool_start(TOOL_ICONS.get(name, "🔧"), _tool_label(name, args))
 
-            start = time.time()
-
             if name in RISKY and self.mode == "confirm":
                 allowed = self.ask_confirm(name, args)
                 if not allowed:
                     results.append({"tool": name, "result": "[dibatalkan]", "success": False})
                     if self.on_tool_end:
-                        self.on_tool_end("🚫", _tool_label(name, args), time.time() - start, False)
+                        self.on_tool_end("🚫", _tool_label(name, args))
                     continue
 
             _, result, success = self._execute_single_tool(name, args)
-            elapsed = time.time() - start
 
             if self.on_tool_end:
-                self.on_tool_end(TOOL_ICONS.get(name, "🔧"), _tool_label(name, args), elapsed, success)
+                self.on_tool_end(TOOL_ICONS.get(name, "🔧"), _tool_label(name, args))
 
             results.append({"tool": name, "result": result, "success": success})
 
@@ -321,8 +315,6 @@ class Agent:
         return results
 
     def _step(self, max_iters=1):
-        if self.stream:
-            self.on_stream_start()
         resp = self.provider.chat(
             self.messages, tools.TOOLS_SCHEMA,
             on_token=self.on_token if self.stream else None
@@ -347,9 +339,6 @@ class Agent:
         tool_calls = resp.get("tool_calls", [])
 
         if content:
-            if self.stream:
-                print()
-                self.notify_stats()
             self.messages.append({"role": "assistant", "content": content})
 
         if not tool_calls:

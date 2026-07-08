@@ -94,9 +94,10 @@ def handle_message(chat_id, text):
         send_message(
             chat_id,
             "SOVEREIGN Agent siap.\n\n"
-            "Ketik langsung task-nya (default mode = confirm, bakal nanya sebelum eksekusi risky).\n"
+            "Ketik langsung task-nya (default mode = auto, langsung eksekusi).\n"
             "Prefix opsional:\n"
-            "/auto <task>        -> full otomatis tanpa tanya\n"
+            "/auto <task>        -> full otomatis tanpa tanya (default)\n"
+            "/confirm <task>     -> mode confirm (tanya dulu sebelum eksekusi risky)\n"
             "/provider claude <task> / groq / openai / mimo\n",
         )
         return
@@ -108,12 +109,16 @@ def handle_message(chat_id, text):
             return
         busy_chats.add(chat_id)
 
-    mode = "confirm"
+    mode = config.DEFAULT_MODE
     provider_name = None
 
     if text.startswith("/auto"):
         mode = "auto"
         text = text[len("/auto"):].strip()
+
+    if text.startswith("/confirm"):
+        mode = "confirm"
+        text = text[len("/confirm"):].strip()
 
     if text.startswith("/provider"):
         parts = text.split(maxsplit=2)

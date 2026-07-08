@@ -4,11 +4,9 @@ Menu setting SOVEREIGN Agent. Diakses lewat: SOVEREIGN setup
 Baca & ubah isi .env secara interaktif, tanpa perlu buka nano manual.
 """
 import os
-import custom_providers
 import sys
 import tty
 import termios
-import select
 import requests
 
 ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -95,19 +93,14 @@ def _save_lines(lines):
         f.write("\n".join(lines) + "\n")
 
 def _getch():
-    """Baca 1 tombol (termasuk panah atas/bawah & ESC tunggal) dari keyboard.
-    Pakai os.read langsung ke fd (bukan sys.stdin) supaya gak bentrok sama
-    buffer internal TextIOWrapper -- itu yang bikin select() salah baca
-    "gak ada data lagi" padahal '[' dan 'A'/'B' udah kesedot ke buffer Python."""
+    """Baca 1 tombol (termasuk panah atas/bawah) dari keyboard."""
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
-        ch = os.read(fd, 1).decode(errors="replace")
+        ch = sys.stdin.read(1)
         if ch == "\x1b":
-            r, _, _ = select.select([fd], [], [], 0.05)
-            if r:
-                ch += os.read(fd, 2).decode(errors="replace")
+            ch += sys.stdin.read(2)
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
     return ch
@@ -186,128 +179,6 @@ def _setup_custom_endpoint(lines):
     input("\nTekan Enter buat lanjut...")
     return lines
 
-def _manage_custom_endpoints():
-    while True:
-        providers = custom_providers.list_providers()
-        print(f"\n{CYAN}{BOLD}=== Multi Custom Endpoint (rotasi provider) ==={RESET}\n")
-        if not providers:
-            print(f"{DIM}(belum ada endpoint custom terdaftar){RESET}")
-        else:
-            for i, p in enumerate(providers, 1):
-                role = p.get("role") or "-"
-                print(f"  {GREEN}{i}{RESET}. {p['name']:15} role={role:8} model={p['model']}")
-        print(f"\n  {GREEN}A{RESET}. Tambah endpoint baru")
-        print(f"  {GREEN}D{RESET}. Hapus endpoint")
-        print(f"  {GREEN}0{RESET}. Kembali\n")
-        choice = input("Pilih: ").strip().lower()
-
-        if choice in ("0", ""):
-            return
-        if choice == "a":
-            _add_custom_endpoint_multi()
-            continue
-        if choice == "d":
-            if not providers:
-                print(f"{YELLOW}Belum ada yang bisa dihapus.{RESET}")
-                continue
-            name = input("Nama endpoint yang mau dihapus: ").strip()
-            custom_providers.delete_provider(name)
-            print(f"{GREEN}✓ dihapus (kalau ada).{RESET}")
-            continue
-        print(f"{YELLOW}Pilihan gak valid.{RESET}")
-
-
-def _add_custom_endpoint_multi():
-    print(f"\n{CYAN}{BOLD}=== Tambah Custom Endpoint ==={RESET}\n")
-    name = input("Nama endpoint (contoh: chatai, codeai): ").strip()
-    if not name:
-        print(f"{DIM}Dibatalkan.{RESET}")
-        return
-    base_url = input("Endpoint API (contoh: https://api.contoh.com/v1): ").strip()
-    if not base_url:
-        print(f"{DIM}Dibatalkan.{RESET}")
-        return
-    api_key = input("API Key: ").strip()
-    if not api_key:
-        print(f"{DIM}Dibatalkan.{RESET}")
-        return
-
-    print(f"\n{DIM}Mengambil daftar model dari endpoint...{RESET}")
-    models = _fetch_models(base_url, api_key)
-    if not models:
-        model = input("Gak ketemu otomatis. Ketik nama model manual: ").strip()
-        if not model:
-            print(f"{DIM}Dibatalkan.{RESET}")
-            return
-    else:
-        model = _select_model(models)
-
-    print(f"\n{DIM}Role dipakai buat command /chatai /codeai (opsional).{RESET}")
-    role_choice = _select_model(["chat", "coding", "none"])
-    role = None if role_choice == "none" else role_choice
-
-    custom_providers.add_provider(name, base_url, api_key, model, role)
-    print(f"\n{GREEN}✓ Endpoint '{name}' tersimpan (role={role or '-'}).{RESET}")
-    extra = f"  atau  /{role}ai" if role else ""
-    print(f"  Pakai: /use {name}{extra}")
-    input("\nTekan Enter buat lanjut...")
-
-
-def _provider_catalog():
-    base = [
-        ("groq", "Groq Cloud", "llama-3.3-70b, super cepat"),
-        ("cerebras", "Cerebras", "gpt-oss-120b, ultra fast"),
-        ("mistral", "Mistral AI", "mistral-small, free tier"),
-        ("gemini", "Google Gemini", "gemini-2.5-flash, gratis 1M token/hari"),
-        ("mimo", "Xiaomi MiMo", "mimo-v2.5 + backup key"),
-        ("openrouter", "OpenRouter", "20+ model gratis"),
-        ("haimaker", "Haimaker.ai", "Gateway 200+ model"),
-        ("openai", "OpenAI", "gpt-4o-mini"),
-        ("claude", "Anthropic Claude", "claude-sonnet-4-6"),
-        ("custom", "Custom Endpoint", "diatur lewat menu C"),
-    ]
-    for p in custom_providers.list_providers():
-        role_val = p.get("role")
-        role = f", role={role_val}" if role_val else ""
-        pname = p["name"]
-        pmodel = p["model"]
-        base.append((pname, f"Custom: {pname}", f"{pmodel}{role}"))
-    return base
-
-
-def _select_radio(options, current_key, title="Select provider:"):
-    idx = 0
-    for i, (key, label, desc) in enumerate(options):
-        if key == current_key:
-            idx = i
-            break
-    while True:
-        print("\033[2J\033[H", end="")
-        print(f"{BOLD}{title}{RESET}\n")
-        print(f"{DIM}↑↓ navigate   ENTER/SPACE select   ESC cancel{RESET}\n")
-        for i, (key, label, desc) in enumerate(options):
-            is_active = key == current_key
-            dot = f"{GREEN}(●){RESET}" if is_active else "(o)"
-            pointer = f"{GREEN}→ {RESET}" if i == idx else "  "
-            line = f"{pointer}{dot} {label}"
-            if desc:
-                line += f"  {DIM}{desc}{RESET}"
-            if is_active:
-                line += f"  {GREEN}← currently active{RESET}"
-            print(f"{BOLD}{line}{RESET}" if i == idx else line)
-        key_in = _getch()
-        if key_in == "\x1b[A":
-            idx = (idx - 1) % len(options)
-        elif key_in == "\x1b[B":
-            idx = (idx + 1) % len(options)
-        elif key_in in ("\r", "\n", " "):
-            return options[idx][0]
-        elif key_in == "\x1b":
-            return None
-        elif key_in == "\x03":
-            raise KeyboardInterrupt
-
-
 def _mask(value):
     if not value:
         return f"{DIM}(belum diisi){RESET}"
@@ -337,8 +208,7 @@ def run():
     while True:
         env = _get_dict(lines)
         numbered = _print_menu(env)
-        print(f"  {GREEN} C{RESET}. Setup Custom Endpoint (auto-detect model)")
-        print(f"  {GREEN} M{RESET}. Kelola Multi Custom Endpoint (rotasi provider)\n")
+        print(f"  {GREEN} C{RESET}. Setup Custom Endpoint (auto-detect model)\n")
         choice = input("Pilih nomor/huruf (0 buat keluar): ").strip()
 
         if choice == "0" or choice == "":
@@ -349,26 +219,11 @@ def run():
             lines = _setup_custom_endpoint(lines)
             continue
 
-        if choice.lower() == "m":
-            _manage_custom_endpoints()
-            continue
-
         if not choice.isdigit() or not (1 <= int(choice) <= len(numbered)):
             print(f"{YELLOW}Nomor gak valid, coba lagi.{RESET}")
             continue
 
         key = numbered[int(choice) - 1]
-
-        if key == "DEFAULT_PROVIDER":
-            current = env.get(key, "")
-            chosen = _select_radio(_provider_catalog(), current)
-            if chosen is None:
-                continue
-            lines = _set_value(lines, key, chosen)
-            _save_lines(lines)
-            print(f"{GREEN}✓ Provider default diganti ke: {chosen}{RESET}")
-            continue
-
         current = env.get(key, "")
         print(f"\nNilai sekarang: {current or '(kosong)'}")
         new_value = input(f"Nilai baru buat {key} (Enter buat batal): ").strip()

@@ -9,7 +9,6 @@ import threading
 import config
 import tools
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import providers
 from providers import get_provider
 import usage_tracker
 
@@ -153,25 +152,6 @@ class Agent:
     def stop(self):
         self.stop_requested = True
 
-    # FIX BUG #2: method-method di bawah ini dulu gak ada di class Agent,
-    # padahal dipanggil dari chat.py (/mode, /use, /provider, /model,
-    # /chatai, /codeai, /stop) -> AttributeError tiap command itu dipakai.
-
-    def set_provider(self, name):
-        """Ganti provider aktif secara live (dipakai /use, /provider, /model, /chatai, /codeai)."""
-        self.provider = get_provider(name)
-        self.provider_name = name
-
-    def set_mode(self, mode):
-        """Ganti mode eksekusi tool: 'auto' atau 'confirm' (dipakai /mode)."""
-        if mode not in ("auto", "confirm"):
-            raise ValueError(f"mode tidak dikenal: {mode}")
-        self.mode = mode
-
-    def request_stop(self):
-        """Alias untuk stop(), dipanggil dari chat.py command /stop."""
-        self.stop_requested = True
-
     # ========== SUPER COGNITION ==========
 
     def think_before_act(self, task):
@@ -181,7 +161,7 @@ class Agent:
         self.cog.reset()
         observation = self.cog.observe(task)
         thoughts = self.cog.think(observation)
-        plan = self.cog.create_plan(observation, thoughts)
+        plan = self.cog.plan(observation, thoughts)
         return {"observation": observation, "thoughts": thoughts, "plan": plan}
 
     def reflect_after_act(self, result, success):
@@ -254,8 +234,8 @@ class Agent:
 
     def _execute_single_tool(self, name, args):
         try:
-            if name in tools.DISPATCH:
-                result = tools.DISPATCH[name](args)
+            if name in tools.TOOL_REGISTRY:
+                result = tools.TOOL_REGISTRY[name](args)
                 return (name, result, True)
             return (name, f"[error] tool '{name}' tidak dikenal", False)
         except Exception as e:
@@ -269,8 +249,8 @@ class Agent:
         safe = []
         risky = []
         for tc in tool_calls:
-            name = tc["name"]
-            args = tc.get("arguments", {})
+            name = tc["function"]["name"]
+            args = tc["function"].get("arguments", {})
             if name in RISKY:
                 risky.append((name, args, tc))
             else:
@@ -280,16 +260,13 @@ class Agent:
 
         # Parallel read-only
         if safe:
-            start_times = {n: time.time() for n, a, tc in safe}
             with ThreadPoolExecutor(max_workers=min(len(safe), 4)) as executor:
                 futures = {executor.submit(self._execute_single_tool, n, a): (n, a, tc)
                           for n, a, tc in safe}
                 for future in as_completed(futures):
                     n, result, success = future.result()
-                    elapsed = time.time() - start_times.get(n, time.time())
-                    matching_args = next((a for nn, a, tc in safe if nn == n), {})
                     if self.on_tool_end:
-                        self.on_tool_end(TOOL_ICONS.get(n, "🔧"), _tool_label(n, matching_args), elapsed, success)
+                        self.on_tool_end(TOOL_ICONS.get(n, "🔧"), _tool_label(n, {}))
                     results.append({"tool": n, "result": result, "success": success})
 
         # Sequential risky
@@ -297,21 +274,18 @@ class Agent:
             if self.on_tool_start:
                 self.on_tool_start(TOOL_ICONS.get(name, "🔧"), _tool_label(name, args))
 
-            start = time.time()
-
             if name in RISKY and self.mode == "confirm":
                 allowed = self.ask_confirm(name, args)
                 if not allowed:
                     results.append({"tool": name, "result": "[dibatalkan]", "success": False})
                     if self.on_tool_end:
-                        self.on_tool_end("🚫", _tool_label(name, args), time.time() - start, False)
+                        self.on_tool_end("🚫", _tool_label(name, args))
                     continue
 
             _, result, success = self._execute_single_tool(name, args)
-            elapsed = time.time() - start
 
             if self.on_tool_end:
-                self.on_tool_end(TOOL_ICONS.get(name, "🔧"), _tool_label(name, args), elapsed, success)
+                self.on_tool_end(TOOL_ICONS.get(name, "🔧"), _tool_label(name, args))
 
             results.append({"tool": name, "result": result, "success": success})
 
@@ -321,18 +295,10 @@ class Agent:
         return results
 
     def _step(self, max_iters=1):
-        if self.stream:
-            self.on_stream_start()
         resp = self.provider.chat(
-            self.messages, tools.TOOLS_SCHEMA,
+            self.messages, tools.TOOL_SCHEMAS,
             on_token=self.on_token if self.stream else None
         )
-
-        # Auto router: track which provider actually answered
-        if hasattr(self.provider, 'current_name') and self.provider.current_name:
-            self.provider_name = self.provider.current_name
-            self.provider = providers.get_provider(self.provider_name)
-
         usage = resp.get("usage", {})
         self.last_usage = usage
         self.session_tokens += usage.get("total", 0)
@@ -347,9 +313,6 @@ class Agent:
         tool_calls = resp.get("tool_calls", [])
 
         if content:
-            if self.stream:
-                print()
-                self.notify_stats()
             self.messages.append({"role": "assistant", "content": content})
 
         if not tool_calls:

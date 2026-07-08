@@ -321,8 +321,6 @@ class Agent:
         return results
 
     def _step(self, max_iters=1):
-        if self.stream:
-            self.on_stream_start()
         resp = self.provider.chat(
             self.messages, tools.TOOLS_SCHEMA,
             on_token=self.on_token if self.stream else None
@@ -347,9 +345,6 @@ class Agent:
         tool_calls = resp.get("tool_calls", [])
 
         if content:
-            if self.stream:
-                print()
-                self.notify_stats()
             self.messages.append({"role": "assistant", "content": content})
 
         if not tool_calls:

@@ -14,7 +14,6 @@ import config
 import tools
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from providers import get_provider
-import usage_tracker
 
 SYSTEM_PROMPT = """Kamu adalah SOVEREIGN Agent, asisten sekaligus autonomous coding/ops agent yang jalan di HP Android (Termux).
 Kamu bisa dua hal:
@@ -163,15 +162,11 @@ class Agent:
                 self.last_elapsed = time.time() - start
             except Exception as e:
                 self.notify(f"[error] gagal manggil provider: {e}")
-                return True
+                return
 
             usage = resp.get("usage") or {}
             self.last_usage = usage
             self.session_tokens += usage.get("total", 0)
-            usage_tracker.log_usage(
-                self.provider_name, getattr(self.provider, "model", "?"),
-                usage.get("input", 0), usage.get("output", 0),
-            )
 
             if resp["content"]:
                 if self.stream:
@@ -182,7 +177,7 @@ class Agent:
 
             if not resp["tool_calls"]:
                 self.messages.append({"role": "assistant", "content": resp["content"]})
-                return True
+                return
 
             assistant_msg = {
                 "role": "assistant",
@@ -246,20 +241,14 @@ class Agent:
                 self.messages.append({"role": "tool", "tool_call_id": call_id, "content": str(result)})
 
             if done:
-                return True
+                return
 
         self.notify("[berhenti] max_iters tercapai, mungkin belum selesai total.")
-        return False
 
     def chat(self, user_input: str, max_iters: int = None):
         max_iters = max_iters or config.MAX_ITERS
         self.messages.append({"role": "user", "content": user_input})
-        finished = self._step(max_iters)
-        extensions = config.MAX_ITER_EXTENSIONS
-        while not finished and extensions > 0:
-            extensions -= 1
-            self.notify(f"🔄 Lanjut otomatis, task keliatan masih progress (sisa percobaan: {extensions})...")
-            finished = self._step(max_iters)
+        self._step(max_iters)
         self.save_session()
 
     def run(self, task: str, max_iters: int = None):

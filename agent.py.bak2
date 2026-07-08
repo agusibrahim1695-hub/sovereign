@@ -2,9 +2,8 @@
 Core agentic loop:
   1. Kirim task + history ke LLM (dengan daftar tools)
   2. LLM balas: teks status dan/atau tool_calls
-  3. Tool baca-baca (read_file/list_dir/fetch_url/web_search) dieksekusi PARALEL
-     kalau dipanggil beberapa sekaligus. Tool risky tetap sequential + confirm.
-  4. Hasil dimasukkan lagi ke history
+  3. Kalau ada tool_call risky & mode='confirm' -> tanya user dulu
+  4. Eksekusi tool, hasil dimasukkan lagi ke history
   5. Ulangi sampai LLM panggil task_done() atau max_iters habis
 """
 import os
@@ -12,18 +11,14 @@ import time
 import json
 import config
 import tools
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from providers import get_provider
-import usage_tracker
 
 SYSTEM_PROMPT = """Kamu adalah SOVEREIGN Agent, asisten sekaligus autonomous coding/ops agent yang jalan di HP Android (Termux).
 Kamu bisa dua hal:
-1. Ngobrol/diskusi biasa — kalau ini yang diminta, JANGAN paksa manggil tool, cukup jawab teks biasa.
-2. Eksekusi task nyata pakai tool: bash_exec, install_package, read_file, patch_file, write_file, list_dir, fetch_url, task_done.
+1. Ngobrol/diskusi biasa (brainstorming, jelasin konsep, nanya balik, ngasih pendapat) — kalau ini yang diminta, JANGAN paksa manggil tool, cukup jawab teks biasa.
+2. Eksekusi task nyata pakai tool: bash_exec, install_package, read_file, write_file, list_dir, fetch_url, task_done — kalau user minta sesuatu dibuatkan/dijalankan/diperbaiki.
 
 Kerja di dalam folder workspace. Kalau butuh library, install sendiri pakai install_package.
-Untuk file besar, pakai read_file dengan start_line+num_lines biar gak baca ulang dari awal terus.
-Untuk edit sebagian file yang sudah ada, pakai patch_file (bukan write_file) biar lebih cepat & hemat token.
 Kalau ada error, baca error-nya, perbaiki, coba lagi — jangan menyerah di percobaan pertama.
 Kalau lagi ngerjain task dan sudah selesai + sudah dites/berfungsi, panggil tool task_done dengan ringkasan hasil.
 Kalau user cuma ngobrol/nanya (bukan minta dibuatkan sesuatu), jangan panggil task_done, cukup jawab biasa.
@@ -33,7 +28,6 @@ TOOL_LABELS = {
     "bash_exec": "Menjalankan perintah",
     "install_package": "Menginstall package",
     "write_file": "Menulis file",
-    "patch_file": "Mengedit bagian file",
     "read_file": "Membaca file",
     "list_dir": "Melihat isi folder",
     "fetch_url": "Mengambil data dari web",
@@ -43,7 +37,7 @@ TOOL_LABELS = {
 
 def _tool_label(name, args):
     base = TOOL_LABELS.get(name, name)
-    if name in ("write_file", "read_file", "patch_file"):
+    if name in ("write_file", "read_file"):
         p = args.get("path", "")
         return f"{base}: {p}" if p else base
     if name == "install_package":
@@ -134,21 +128,6 @@ class Agent:
         except Exception as e:
             self.notify(f"⚠️ gagal load session: {e}")
 
-    def _box_close(self):
-        from chat import CYAN, RESET
-        return f"{CYAN}└" + "─" * 58 + f"{RESET}"
-
-    def _run_tool(self, name, args):
-        label = _tool_label(name, args)
-        self.notify(f"⏳ {label}...")
-        try:
-            result = tools.DISPATCH[name](args)
-        except Exception as e:
-            result = f"[error] {e}"
-        if str(result).startswith("[error]"):
-            self.notify(f"⚠️ {label} gagal")
-        return result
-
     def _step(self, max_iters):
         for _ in range(max_iters):
             self._trim_history()
@@ -163,15 +142,11 @@ class Agent:
                 self.last_elapsed = time.time() - start
             except Exception as e:
                 self.notify(f"[error] gagal manggil provider: {e}")
-                return True
+                return
 
             usage = resp.get("usage") or {}
             self.last_usage = usage
             self.session_tokens += usage.get("total", 0)
-            usage_tracker.log_usage(
-                self.provider_name, getattr(self.provider, "model", "?"),
-                usage.get("input", 0), usage.get("output", 0),
-            )
 
             if resp["content"]:
                 if self.stream:
@@ -182,7 +157,7 @@ class Agent:
 
             if not resp["tool_calls"]:
                 self.messages.append({"role": "assistant", "content": resp["content"]})
-                return True
+                return
 
             assistant_msg = {
                 "role": "assistant",
@@ -198,27 +173,9 @@ class Agent:
             }
             self.messages.append(assistant_msg)
 
-            parallel_calls = [
-                tc for tc in resp["tool_calls"]
-                if tc["name"] in tools.PARALLEL_SAFE_TOOLS and tc["name"] in tools.DISPATCH
-            ]
-            parallel_results = {}
-            if len(parallel_calls) > 1:
-                with ThreadPoolExecutor(max_workers=min(8, len(parallel_calls))) as ex:
-                    futures = {
-                        ex.submit(self._run_tool, tc["name"], tc["arguments"]): tc["id"]
-                        for tc in parallel_calls
-                    }
-                    for fut in as_completed(futures):
-                        parallel_results[futures[fut]] = fut.result()
-
             done = False
             for tc in resp["tool_calls"]:
                 name, args, call_id = tc["name"], tc["arguments"], tc["id"]
-
-                if call_id in parallel_results:
-                    self.messages.append({"role": "tool", "tool_call_id": call_id, "content": str(parallel_results[call_id])})
-                    continue
 
                 if name == "task_done":
                     self.notify(f"✅ SELESAI: {args.get('summary', '(tanpa ringkasan)')}")
@@ -226,40 +183,37 @@ class Agent:
                     done = True
                     continue
 
+                label = _tool_label(name, args)
+
                 if name not in tools.DISPATCH:
                     result = f"[error] tool '{name}' tidak dikenal"
-                    self.notify(f"⚠️ {_tool_label(name, args)} gagal (tool tidak dikenal)")
-                elif self.mode == "confirm" and name in tools.RISKY_TOOLS:
-                    label = _tool_label(name, args)
+                    self.notify(f"⚠️ {label} gagal (tool tidak dikenal)")
+                else:
                     self.notify(f"⏳ {label}...")
-                    allowed = self.ask_confirm(name, args)
-                    if not allowed:
-                        result = "[ditolak user] eksekusi dibatalkan"
-                        self.notify(f"🚫 {label} dibatalkan")
+                    if self.mode == "confirm" and name in tools.RISKY_TOOLS:
+                        allowed = self.ask_confirm(name, args)
+                        if not allowed:
+                            result = "[ditolak user] eksekusi dibatalkan"
+                            self.notify(f"🚫 {label} dibatalkan")
+                        else:
+                            result = tools.DISPATCH[name](args)
                     else:
                         result = tools.DISPATCH[name](args)
-                        if str(result).startswith("[error]"):
-                            self.notify(f"⚠️ {label} gagal")
-                else:
-                    result = self._run_tool(name, args)
+
+                    if str(result).startswith("[error]"):
+                        self.notify(f"⚠️ {label} gagal")
 
                 self.messages.append({"role": "tool", "tool_call_id": call_id, "content": str(result)})
 
             if done:
-                return True
+                return
 
         self.notify("[berhenti] max_iters tercapai, mungkin belum selesai total.")
-        return False
 
     def chat(self, user_input: str, max_iters: int = None):
         max_iters = max_iters or config.MAX_ITERS
         self.messages.append({"role": "user", "content": user_input})
-        finished = self._step(max_iters)
-        extensions = config.MAX_ITER_EXTENSIONS
-        while not finished and extensions > 0:
-            extensions -= 1
-            self.notify(f"🔄 Lanjut otomatis, task keliatan masih progress (sisa percobaan: {extensions})...")
-            finished = self._step(max_iters)
+        self._step(max_iters)
         self.save_session()
 
     def run(self, task: str, max_iters: int = None):

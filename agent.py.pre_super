@@ -6,15 +6,24 @@ Core agentic loop:
      kalau dipanggil beberapa sekaligus. Tool risky tetap sequential + confirm.
   4. Hasil dimasukkan lagi ke history
   5. Ulangi sampai LLM panggil task_done() atau max_iters habis
+
+Tampilan tool: tiap tool yang jalan ditampilkan lewat hook on_tool_start/on_tool_end
+(disediakan UI, misal chat.py, buat live update). Kalau UI gak nyediain hook itu
+(dipakai telegram_bot.py & cli.py), fallback ke notify() teks biasa kayak sebelumnya.
 """
 import os
 import time
 import json
+import threading
 import config
 import tools
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from providers import get_provider
 import usage_tracker
+try:
+    import rag_core
+except ImportError:
+    rag_core = None
 
 SYSTEM_PROMPT = """Kamu adalah SOVEREIGN Agent, asisten sekaligus autonomous coding/ops agent yang jalan di HP Android (Termux).
 Kamu bisa dua hal:
@@ -40,6 +49,19 @@ TOOL_LABELS = {
     "web_search": "Mencari di internet",
 }
 
+TOOL_ICONS = {
+    "bash_exec": "⚡",
+    "install_package": "📦",
+    "write_file": "📝",
+    "patch_file": "✏️",
+    "read_file": "📖",
+    "list_dir": "📂",
+    "fetch_url": "🌐",
+    "web_search": "🔍",
+}
+
+_print_lock = threading.Lock()
+
 
 def _tool_label(name, args):
     base = TOOL_LABELS.get(name, name)
@@ -52,13 +74,17 @@ def _tool_label(name, args):
     if name == "fetch_url":
         url = args.get("url", "")
         return f"{base}: {url}" if url else base
+    if name == "web_search":
+        q = args.get("query", "")
+        return f"{base}: {q}" if q else base
     return base
 
 
 class Agent:
     def __init__(self, provider_name=None, mode="confirm", notify=print, ask_confirm=None,
                  session_name=None, auto_trim_ratio=0.75, stream=True,
-                 on_token=None, on_stream_start=None):
+                 on_token=None, on_stream_start=None,
+                 on_tool_start=None, on_tool_end=None):
         self.provider_name = provider_name or config.DEFAULT_PROVIDER
         self.provider = get_provider(provider_name)
         self.mode = mode
@@ -69,17 +95,35 @@ class Agent:
         self.stream = stream
         self.on_token = on_token or (lambda piece: print(piece, end="", flush=True))
         self.on_stream_start = on_stream_start or (lambda: None)
+        self.on_tool_start = on_tool_start
+        self.on_tool_end = on_tool_end
         self.notify_stats = lambda: None
         self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         self.session_tokens = 0
         self.last_usage = {"input": 0, "output": 0, "total": 0}
         self.last_elapsed = 0.0
+        self.stop_requested = False
 
         if session_name:
             self.load_session(session_name)
 
+        # Auto-index workspace untuk RAG
+        if rag_core:
+            try:
+                ws = getattr(config, 'WORKSPACE_DIR', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'workspace'))
+                db = rag_core.get_db()
+                stats = db.stats()
+                if stats['files'] == 0:
+                    rag_core.index_workspace(ws, db)
+            except Exception:
+                pass
+
+    def request_stop(self):
+        self.stop_requested = True
+
     def reset(self):
         self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        self.stop_requested = False
 
     def set_provider(self, provider_name):
         self.provider = get_provider(provider_name)
@@ -94,10 +138,49 @@ class Agent:
         total_chars = sum(len(json.dumps(m, ensure_ascii=False)) for m in messages)
         return total_chars // 4
 
+    def _compress_messages(self, messages):
+        """Compress old messages jadi summary ringkas."""
+        if len(messages) <= 6:
+            return messages
+
+        # Ambil 3 pesan terakhir sebagai context
+        recent = messages[-3:]
+        old = messages[:-3]
+
+        # Build summary dari old messages
+        summary_parts = []
+        for msg in old:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if not content:
+                continue
+            if role == "user":
+                summary_parts.append(f"User: {content[:150]}")
+            elif role == "assistant":
+                summary_parts.append(f"AI: {content[:150]}")
+            elif role == "tool":
+                tool_result = content[:100]
+                summary_parts.append(f"Tool: {tool_result}")
+
+        summary = " | ".join(summary_parts[-10:])  # Ambil 10 terakhir
+
+        # Buat compressed message
+        compressed = [{"role": "user", "content": f"[Ringkasan percakapan sebelumnya]: {summary}"}]
+        return compressed + recent
+
     def _trim_history(self):
         limit = int(self.provider.context_window * self.auto_trim_ratio)
         if self._estimate_tokens(self.messages) <= limit:
             return
+
+        # Coba compress dulu
+        compressed = self._compress_messages(self.messages)
+        if self._estimate_tokens(compressed) <= limit:
+            self.messages = compressed
+            self.notify("ℹ️ history dikompresi otomatis (hemat token!)")
+            return
+
+        # Kalau masih kelebihan, trim agresif
         system = self.messages[0]
         rest = self.messages[1:]
         while rest and self._estimate_tokens([system] + rest) > limit:
@@ -134,33 +217,64 @@ class Agent:
         except Exception as e:
             self.notify(f"⚠️ gagal load session: {e}")
 
-    def _box_close(self):
-        from chat import CYAN, RESET
-        return f"{CYAN}└" + "─" * 58 + f"{RESET}"
-
     def _run_tool(self, name, args):
+        """Eksekusi 1 tool dengan live start/end display lewat hook UI (kalau ada),
+        fallback ke notify() teks biasa (dipakai telegram_bot.py & cli.py)."""
         label = _tool_label(name, args)
-        self.notify(f"⏳ {label}...")
+        icon = TOOL_ICONS.get(name, "🔧")
+
+        with _print_lock:
+            if self.on_tool_start:
+                self.on_tool_start(icon, label)
+            else:
+                self.notify(f"⏳ {label}...")
+
+        start = time.time()
         try:
             result = tools.DISPATCH[name](args)
+            ok = not str(result).startswith("[error]")
         except Exception as e:
             result = f"[error] {e}"
-        if str(result).startswith("[error]"):
-            self.notify(f"⚠️ {label} gagal")
+            ok = False
+        elapsed = time.time() - start
+
+        with _print_lock:
+            if self.on_tool_end:
+                self.on_tool_end(icon, label, elapsed, ok)
+            elif not ok:
+                self.notify(f"⚠️ {label} gagal")
+
         return result
 
     def _step(self, max_iters):
         for _ in range(max_iters):
             self._trim_history()
+            if self.stop_requested:
+                self.notify("STOP diminta oleh user.")
+                self.stop_requested = False
+                return True
             try:
                 start = time.time()
-                if self.stream:
-                    self.on_stream_start()
+                box_opened = {"v": False}
+
+                def _on_token(piece):
+                    # Box header cuma dibuka pas token PERTAMA beneran dateng,
+                    # biar gak nyangkut kebuka kalau respons ternyata cuma
+                    # tool_calls tanpa teks sama sekali.
+                    if not box_opened["v"]:
+                        self.on_stream_start()
+                        box_opened["v"] = True
+                    self.on_token(piece)
+
                 resp = self.provider.chat(
                     self.messages, tools.TOOLS_SCHEMA,
-                    on_token=self.on_token if self.stream else None,
+                    on_token=_on_token if self.stream else None,
                 )
                 self.last_elapsed = time.time() - start
+            except KeyboardInterrupt:
+                self.notify("STOP! (Ctrl+C)")
+                self.stop_requested = False
+                return True
             except Exception as e:
                 self.notify(f"[error] gagal manggil provider: {e}")
                 return True
@@ -231,15 +345,19 @@ class Agent:
                     self.notify(f"⚠️ {_tool_label(name, args)} gagal (tool tidak dikenal)")
                 elif self.mode == "confirm" and name in tools.RISKY_TOOLS:
                     label = _tool_label(name, args)
-                    self.notify(f"⏳ {label}...")
+                    icon = TOOL_ICONS.get(name, "🔧")
+                    with _print_lock:
+                        self.notify(f"⚠️ Konfirmasi diperlukan: {label}")
                     allowed = self.ask_confirm(name, args)
                     if not allowed:
                         result = "[ditolak user] eksekusi dibatalkan"
-                        self.notify(f"🚫 {label} dibatalkan")
+                        with _print_lock:
+                            if self.on_tool_end:
+                                self.on_tool_end(icon, label, 0.0, False)
+                            else:
+                                self.notify(f"🚫 {label} dibatalkan")
                     else:
-                        result = tools.DISPATCH[name](args)
-                        if str(result).startswith("[error]"):
-                            self.notify(f"⚠️ {label} gagal")
+                        result = self._run_tool(name, args)
                 else:
                     result = self._run_tool(name, args)
 
@@ -254,12 +372,15 @@ class Agent:
     def chat(self, user_input: str, max_iters: int = None):
         max_iters = max_iters or config.MAX_ITERS
         self.messages.append({"role": "user", "content": user_input})
-        finished = self._step(max_iters)
-        extensions = config.MAX_ITER_EXTENSIONS
-        while not finished and extensions > 0:
-            extensions -= 1
-            self.notify(f"🔄 Lanjut otomatis, task keliatan masih progress (sisa percobaan: {extensions})...")
+        try:
             finished = self._step(max_iters)
+            extensions = config.MAX_ITER_EXTENSIONS
+            while not finished and extensions > 0:
+                extensions -= 1
+                self.notify(f"🔄 Lanjut otomatis, task keliatan masih progress (sisa percobaan: {extensions})...")
+                finished = self._step(max_iters)
+        except KeyboardInterrupt:
+            self.notify("🛑 STOP! (Ctrl+C)")
         self.save_session()
 
     def run(self, task: str, max_iters: int = None):

@@ -13,13 +13,11 @@ import config
 import sync
 import setup_menu
 import custom_providers
-import usage_tracker
 from agent import Agent
 
 SESSION_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions")
 os.makedirs(SESSION_DIR, exist_ok=True)
 LAST_SESSION = os.path.join(SESSION_DIR, "_last.json")
-TIP_FLAG_PATH = os.path.join(SESSION_DIR, ".tip_shown")
 
 BANNER = r"""
    _____ ______      ________ _____  ______ _____ _____ _   _
@@ -32,6 +30,7 @@ BANNER = r"""
          Autonomous Agent Portal — ketik bebas, gue kerjain.
 """
 
+
 RESET = "\033[0m"
 BOLD = "\033[1m"
 DIM = "\033[2m"
@@ -41,9 +40,6 @@ YELLOW = "\033[33m"
 RED = "\033[31m"
 MAGENTA = "\033[35m"
 BLUE = "\033[34m"
-ORANGE = "\033[38;5;208m"
-
-TOOL_MODES = ["all", "new", "off", "verbose"]
 
 
 def format_k(n):
@@ -58,9 +54,8 @@ def make_bar(pct, width=16):
     color = GREEN if pct < 50 else (YELLOW if pct < 80 else RED)
     return f"{color}{'█' * filled}{DIM}{'░' * (width - filled)}{RESET}"
 
-
 def print_stats(agent):
-    print(f"{ORANGE}└" + "─" * 58 + f"{RESET}")
+    print(f"{CYAN}└" + "─" * 58 + f"{RESET}")
     ctx = getattr(agent.provider, "context_window", 128_000)
     last_usage = getattr(agent, "last_usage", {}) or {}
     context_used = last_usage.get("input", 0)
@@ -71,79 +66,49 @@ def print_stats(agent):
     bar = make_bar(pct)
     pct_color = GREEN if pct < 50 else (YELLOW if pct < 80 else RED)
     print(
-        f"{YELLOW}⚡ {model}{RESET} {DIM}|{RESET} "
+        f"{MAGENTA}⚡ {model}{RESET} {DIM}|{RESET} "
         f"{format_k(context_used)}/{format_k(ctx)} tok {DIM}|{RESET} "
         f"[{bar}] {pct_color}{pct}%{RESET} {DIM}|{RESET} {BLUE}{elapsed:.1f}s{RESET} {DIM}|{RESET} "
         f"total sesi: {format_k(session_total)} tok\n"
     )
-
 
 def make_notify(agent, label="SOVEREIGN"):
     def _notify(text):
         if not text:
             return
 
-        # Baris proses/info tampil simpel, gak pakai box
-        if text.startswith(("⏳", "🚫", "⚠️", "✅", "📂", "ℹ️", "🔄", "🧠", "💾")):
+        # Baris proses (dari agent.py) tampil simpel, gak pakai box
+        if text.startswith(("⏳", "🚫", "⚠️")):
             print(f"{DIM}{text}{RESET}")
             return
 
         w = 58
-        print(f"\n{ORANGE}┌─ {BOLD}{YELLOW}⚡ {label} {RESET}{ORANGE}" + "─" * max(0, w - len(label) - 6) + RESET)
+        print(f"\n{CYAN}┌─ {BOLD}{YELLOW}🤖 {label} {RESET}{CYAN}" + "─" * max(0, w - len(label) - 6) + RESET)
         for line in text.split("\n"):
-            print(f"{ORANGE}│{RESET} {line}")
-        print(f"{ORANGE}└" + "─" * w + RESET)
-        print_stats(agent)
+            print(f"{CYAN}│{RESET} {line}")
+        print(f"{CYAN}└" + "─" * w + RESET)
+
+        ctx = getattr(agent.provider, "context_window", 128_000)
+        last_usage = getattr(agent, "last_usage", {}) or {}
+        # Pakai token input dari panggilan TERAKHIR aja buat ukur context terpakai
+        # (ini jumlah token history yang beneran dikirim barusan), bukan akumulasi
+        # dari awal sesi -- akumulasi itu double-count dan gak nunjukin kepenuhan
+        # context yang sebenarnya.
+        context_used = last_usage.get("input", 0)
+        session_total = getattr(agent, "session_tokens", 0)
+        pct = min(100, int(context_used / ctx * 100)) if ctx else 0
+        model = getattr(agent.provider, "model", "?")
+        elapsed = getattr(agent, "last_elapsed", 0.0)
+        bar = make_bar(pct)
+        pct_color = GREEN if pct < 50 else (YELLOW if pct < 80 else RED)
+        print(
+            f"{MAGENTA}⚡ {model}{RESET} {DIM}|{RESET} "
+            f"{format_k(context_used)}/{format_k(ctx)} tok {DIM}|{RESET} "
+            f"[{bar}] {pct_color}{pct}%{RESET} {DIM}|{RESET} {BLUE}{elapsed:.1f}s{RESET} {DIM}|{RESET} "
+            f"total sesi: {format_k(session_total)} tok\n"
+        )
 
     return _notify
-
-
-def _tip_already_shown():
-    return os.path.exists(TIP_FLAG_PATH)
-
-
-def _mark_tip_shown():
-    try:
-        open(TIP_FLAG_PATH, "w").close()
-    except Exception:
-        pass
-
-
-def make_tool_hooks(mode_state, tip_state):
-    """Hook live on_tool_start/on_tool_end buat agent.py -- render tree-style
-    tool progress, mengikuti mode_state['mode'] (all/new/off/verbose)."""
-
-    def on_tool_start(icon, label):
-        mode = mode_state["mode"]
-        if mode == "off":
-            return
-        if mode == "new":
-            sys.stdout.write(f"\r{DIM}  ⏳ preparing {label}…{RESET}\033[K")
-            sys.stdout.flush()
-            return
-        print(f"{DIM}  ⏳ preparing {label}…{RESET}")
-
-    def on_tool_end(icon, label, elapsed, ok):
-        mode = mode_state["mode"]
-        if mode == "off":
-            return
-        status = "" if ok else f" {RED}[error]{RESET}"
-        line = f"  {icon}  {label}  {DIM}{elapsed:.1f}s{RESET}{status}"
-        if mode == "new":
-            sys.stdout.write(f"\r{line}\033[K\n")
-            sys.stdout.flush()
-        else:
-            print(line)
-
-        if elapsed > 8 and not tip_state["shown"]:
-            print(
-                f"{YELLOW}(tip) Tool tadi jalan agak lama. Pakai /verbose buat ganti mode "
-                f"tampilan tool (all → new → off → verbose). Tip ini cuma muncul sekali.{RESET}"
-            )
-            tip_state["shown"] = True
-            _mark_tip_shown()
-
-    return on_tool_start, on_tool_end
 
 
 def check_sync_status():
@@ -206,7 +171,7 @@ def set_clipboard(text):
 
 
 def ask_confirm_cli(name, args):
-    print(f"\n{YELLOW}❓ AI mau jalanin tool RISKY: {name}({args}){RESET}")
+    print(f"\n⚠️  AI mau jalanin tool RISKY: {name}({args})")
     ans = input("Izinkan? [y/n]: ").strip().lower()
     return ans == "y"
 
@@ -249,19 +214,13 @@ def list_sessions():
     files = [f[:-5] for f in os.listdir(SESSION_DIR) if f.endswith(".json") and not f.startswith("_")]
     return files
 
-
 def _registered_providers():
     """Provider yang API key-nya udah diisi di .env."""
     mapping = {
         "groq": config.GROQ_API_KEY,
-        "cerebras": config.CEREBRAS_API_KEY,
-        "gemini": config.GEMINI_API_KEY,
-        "mistral": config.MISTRAL_API_KEY,
-        "mimo": config.MIMO_API_KEY,
-        "openrouter": config.OPENROUTER_API_KEY,
-        "haimaker": config.HAIMAKER_API_KEY,
         "claude": config.ANTHROPIC_API_KEY,
         "openai": config.OPENAI_API_KEY,
+        "mimo": config.MIMO_API_KEY,
         "custom": config.CUSTOM_API_KEY,
     }
     return [name for name, key in mapping.items() if key]
@@ -284,7 +243,6 @@ def pick_provider_interactive(agent):
     agent.set_provider(choice)
     agent.provider_name = choice
     print(f"{GREEN}[provider diganti ke: {choice}]{RESET}\n")
-
 
 def print_providers_list(agent):
     print(f"\n{CYAN}{BOLD}=== Provider tersedia ==={RESET}")
@@ -314,18 +272,13 @@ def switch_by_role(agent, role):
         print(f"[error] {e}\n")
 
 
-def print_help(agent, mode_state):
+def print_help(agent):
     print(
         f"""
-Status -> provider: {getattr(agent, "provider_name", None) or config.DEFAULT_PROVIDER} | mode: {agent.mode} | tampilan tool: {mode_state["mode"]}
+Status -> provider: {getattr(agent, "provider_name", None) or config.DEFAULT_PROVIDER} | mode: {agent.mode}
 
 Command:
   /help                -> bantuan ini
-  /stop                -> hentikan agent yang lagi jalan
-  /index               -> index workspace ke RAG knowledge base
-  /search <query>      -> search knowledge base (hemat token!)
-  /rag                 -> lihat statistik RAG
-  /rebuild             -> rebuild semua index dari awal
   /reset               -> mulai obrolan baru (buang history sesi ini)
   /save <nama>         -> simpan sesi sekarang sebagai proyek bernama <nama>
   /load <nama>         -> buka proyek <nama> (history-nya kesambung lagi)
@@ -334,9 +287,9 @@ Command:
   /paste               -> ambil isi clipboard HP dan kirim sebagai pesan
   /copylast            -> salin balesan terakhir AI ke clipboard HP
   /model               -> pilih provider terdaftar pakai panah atas/bawah
-  /provider <nama>     -> ganti provider: auto / groq / cerebras / gemini / mistral / mimo / openrouter
+  /provider <nama>     -> ganti provider: groq / claude / openai / mimo / custom
+  /provider <nama>     -> ganti provider: groq / claude / openai / mimo
   /mode auto|confirm   -> ganti mode eksekusi tool
-  /verbose             -> ganti mode tampilan progress tool (all -> new -> off -> verbose)
   /exit                -> keluar (obrolan otomatis kesimpen, lanjut lagi pas dibuka ulang)
 
 Ketik bebas aja buat ngobrol atau nyuruh bikinin/jalanin sesuatu.
@@ -373,19 +326,10 @@ def main():
     agent.notify = make_notify(agent)
     agent.notify_stats = lambda: print_stats(agent)
     agent.on_stream_start = lambda: print(
-        f"\n{ORANGE}┌─ {BOLD}{YELLOW}⚡ SOVEREIGN{RESET}{ORANGE} " + "─" * 44 + f"{RESET}\n{ORANGE}│{RESET} ",
+        f"\n{CYAN}┌─ {BOLD}{YELLOW}🤖 SOVEREIGN{RESET}{CYAN} " + "─" * 44 + f"{RESET}\n{CYAN}│{RESET} ",
         end="", flush=True,
     )
-
-    mode_state = {"mode": "all"}
-    tip_state = {"shown": _tip_already_shown()}
-    on_start, on_end = make_tool_hooks(mode_state, tip_state)
-    agent.on_tool_start = on_start
-    agent.on_tool_end = on_end
-
-    print(f"{ORANGE}{BOLD}{BANNER}{RESET}")
-    print(f"{BOLD}Welcome to SOVEREIGN Agent!{RESET} Type your message or /help for commands.")
-    print(f"{DIM}{'─' * 60}{RESET}\n")
+    print(f"{CYAN}{BOLD}{BANNER}{RESET}")
     sync.pull_sessions()
 
     resumed = False
@@ -404,7 +348,7 @@ def main():
 
     while True:
         try:
-            user_input = input(f"{BOLD}{YELLOW}❯ {RESET}").strip()
+            user_input = input(f"{BOLD}{GREEN}Lo   : {RESET}").strip()
         except (EOFError, KeyboardInterrupt):
             save_session(LAST_SESSION, agent)
             print("\nSOVEREIGN off, obrolan kesimpen. Sampai ketemu lagi, bro.")
@@ -413,73 +357,13 @@ def main():
         if not user_input:
             continue
 
-        print(f"{DIM}{'─' * 60}{RESET}")
-
         if user_input == "/exit":
             save_session(LAST_SESSION, agent)
             print("SOVEREIGN off, obrolan kesimpen. Sampai ketemu lagi, bro.")
             break
 
         if user_input == "/help":
-            print_help(agent, mode_state)
-            continue
-
-        if user_input == "/verbose":
-            idx = TOOL_MODES.index(mode_state["mode"])
-            mode_state["mode"] = TOOL_MODES[(idx + 1) % len(TOOL_MODES)]
-            print(f"{GREEN}[mode tampilan tool: {mode_state['mode']}]{RESET}\n")
-            continue
-
-        if user_input == "/stop":
-            agent.request_stop()
-            print(f"[33m🛑 Stop requested — agent akan berhenti setelah task selesai.[0m")
-            print(f"[2m   (atau pencet Ctrl+C buat langsung stop)[0m")
-            continue
-
-        if user_input == "/index":
-            try:
-                import rag_core
-                ws = getattr(config, 'WORKSPACE_DIR', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'workspace'))
-                result = rag_core.index_workspace(ws)
-                print(f"\033[32m✅ Indexed: {result['files_indexed']} files, {result['chunks_created']} chunks\033[0m\n")
-            except Exception as e:
-                print(f"\033[31m❌ Index error: {e}\033[0m")
-            continue
-
-        if user_input == "/search":
-            print("\033[2mKetik query setelah /search, contoh: /search cara kerja SMC\033[0m")
-            continue
-
-        if user_input.startswith("/search "):
-            query = user_input[8:].strip()
-            if not query:
-                print("\033[33mKetik query, contoh: /search cara kerja SMC\033[0m")
-                continue
-            try:
-                import rag_core
-                result = rag_core.search_knowledge(query, top_n=5)
-                print(f"\n{result}\n")
-            except Exception as e:
-                print(f"\033[31m❌ Search error: {e}\033[0m")
-            continue
-
-        if user_input == "/rag":
-            try:
-                import rag_core
-                result = rag_core.index_stats()
-                print(f"\n{result}\n")
-            except Exception as e:
-                print(f"\033[31m❌ RAG error: {e}\033[0m")
-            continue
-
-        if user_input == "/rebuild":
-            try:
-                import rag_core
-                ws = getattr(config, 'WORKSPACE_DIR', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'workspace'))
-                result = rag_core.rebuild_index(ws)
-                print(f"\n{result}\n")
-            except Exception as e:
-                print(f"\033[31m❌ Rebuild error: {e}\033[0m")
+            print_help(agent)
             continue
 
         if user_input == "/reset":
@@ -552,21 +436,6 @@ def main():
         if user_input == "/model":
             pick_provider_interactive(agent)
             continue
-        if user_input == "/usage":
-            stats = usage_tracker.get_today_stats()
-            if not stats:
-                print(f"{YELLOW}Belum ada pemakaian tercatat hari ini.{RESET}\n")
-            else:
-                print(f"\n{CYAN}{BOLD}=== Pemakaian hari ini ==={RESET}")
-                total_cost = 0.0
-                for name, d in stats.items():
-                    cost = d.get("cost", 0.0)
-                    total_cost += cost
-                    cost_str = f"${cost:.4f}" if cost > 0 else f"{DIM}(gratis/gak diketahui){RESET}"
-                    print(f"  {GREEN}{name:12}{RESET} model={d.get('model','?'):20} in={format_k(d.get('input',0))} out={format_k(d.get('output',0))} {cost_str}")
-                print(f"  {DIM}Total estimasi biaya hari ini: ${total_cost:.4f}{RESET}\n")
-            continue
-
         if user_input == "/providers":
             print_providers_list(agent)
             continue
@@ -595,7 +464,7 @@ def main():
         if user_input.startswith("/provider"):
             parts = user_input.split(maxsplit=1)
             if len(parts) < 2:
-                print("Pakai: /provider groq|claude|openai|mimo|custom")
+                print("Pakai: /provider groq|claude|openai|mimo")
                 continue
             try:
                 agent.set_provider(parts[1].strip())

@@ -60,7 +60,6 @@ def make_bar(pct, width=16):
 
 
 def print_stats(agent):
-    print(f"{ORANGE}└" + "─" * 58 + f"{RESET}")
     ctx = getattr(agent.provider, "context_window", 128_000)
     last_usage = getattr(agent, "last_usage", {}) or {}
     context_used = last_usage.get("input", 0)
@@ -84,7 +83,7 @@ def make_notify(agent, label="SOVEREIGN"):
             return
 
         # Baris proses/info tampil simpel, gak pakai box
-        if text.startswith(("⏳", "🚫", "⚠️", "✅", "📂", "ℹ️", "🔄", "🧠", "💾")):
+        if text.startswith(("⏳", "🚫", "⚠️", "✅", "📂", "ℹ️", "🔄")):
             print(f"{DIM}{text}{RESET}")
             return
 
@@ -254,14 +253,9 @@ def _registered_providers():
     """Provider yang API key-nya udah diisi di .env."""
     mapping = {
         "groq": config.GROQ_API_KEY,
-        "cerebras": config.CEREBRAS_API_KEY,
-        "gemini": config.GEMINI_API_KEY,
-        "mistral": config.MISTRAL_API_KEY,
-        "mimo": config.MIMO_API_KEY,
-        "openrouter": config.OPENROUTER_API_KEY,
-        "haimaker": config.HAIMAKER_API_KEY,
         "claude": config.ANTHROPIC_API_KEY,
         "openai": config.OPENAI_API_KEY,
+        "mimo": config.MIMO_API_KEY,
         "custom": config.CUSTOM_API_KEY,
     }
     return [name for name, key in mapping.items() if key]
@@ -334,7 +328,7 @@ Command:
   /paste               -> ambil isi clipboard HP dan kirim sebagai pesan
   /copylast            -> salin balesan terakhir AI ke clipboard HP
   /model               -> pilih provider terdaftar pakai panah atas/bawah
-  /provider <nama>     -> ganti provider: auto / groq / cerebras / gemini / mistral / mimo / openrouter
+  /provider <nama>     -> ganti provider: groq / claude / openai / mimo / custom
   /mode auto|confirm   -> ganti mode eksekusi tool
   /verbose             -> ganti mode tampilan progress tool (all -> new -> off -> verbose)
   /exit                -> keluar (obrolan otomatis kesimpen, lanjut lagi pas dibuka ulang)

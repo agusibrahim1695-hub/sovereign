@@ -33,10 +33,9 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
-# FIX BUG #1: DEFAULT_PROVIDER dulu gak pernah didefinisikan di sini,
-# padahal dipakai di agent.py / providers.py / chat.py -> AttributeError
-# tiap kali app dijalanin tanpa --provider (= gak bisa masuk sama sekali).
-DEFAULT_PROVIDER = os.environ.get("DEFAULT_PROVIDER", "auto")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_ALLOWED_CHAT_ID = os.environ.get("TELEGRAM_ALLOWED_CHAT_ID", "")
+DEFAULT_PROVIDER = os.environ.get("DEFAULT_PROVIDER", "groq")
 DEFAULT_MODE = os.environ.get("DEFAULT_MODE", "confirm")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "")
@@ -44,15 +43,9 @@ GITHUB_BRANCH = os.environ.get("GITHUB_BRANCH", "main")
 MIMO_API_KEY = os.environ.get("MIMO_API_KEY", "")
 MIMO_BASE_URL = os.environ.get("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1")
 MIMO_MODEL = os.environ.get("MIMO_MODEL", "mimo")
-MIMO_BACKUP_KEY = os.environ.get("MIMO_BACKUP_KEY", "")
 CUSTOM_API_KEY = os.environ.get("CUSTOM_API_KEY", "")
 CUSTOM_BASE_URL = os.environ.get("CUSTOM_BASE_URL", "")
 CUSTOM_MODEL = os.environ.get("CUSTOM_MODEL", "")
-CEREBRAS_API_KEY = os.environ.get("CEREBRAS_API_KEY", "")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-HAIMAKER_API_KEY = os.environ.get("HAIMAKER_API_KEY", "")
 CUSTOM_PROVIDERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom_providers.json")
 SERPER_API_KEY = os.environ.get("SERPER_API_KEY", "")
 WORKSPACE_DIR = os.environ.get(
@@ -71,18 +64,3 @@ SESSIONS_DIR = os.environ.get(
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 
 os.makedirs(WORKSPACE_DIR, exist_ok=True)
-
-# Mistral AI (Free Experiment Tier - No CC)
-
-# Cerebras (1M tokens/day FREE - Ultra Fast)
-
-# Cloudflare Workers AI (50+ models, 10K neurons/day FREE)
-CLOUDFLARE_API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN", "")
-CLOUDFLARE_ACCOUNT_ID = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
-
-# Haimaker.ai (AI API Gateway - 200+ models)
-HAIMAKER_BASE_URL = os.environ.get("HAIMAKER_BASE_URL", "https://api.haimaker.ai/v1")
-
-# OpenRouter (20+ free models, single API key)
-
-# Google Gemini (Free tier via AI Studio)

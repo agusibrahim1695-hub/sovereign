@@ -1,0 +1,10 @@
+[
+  {
+    "role": "user",
+    "content": "say hi in 5 words"
+  },
+  {
+    "role": "assistant",
+    "content": "Halo, apa kabar hari ini?"
+  }
+]

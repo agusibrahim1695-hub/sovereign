@@ -1,0 +1,6 @@
+[
+  {
+    "role": "user",
+    "content": "read the first 3 lines of tools.py"
+  }
+]

@@ -1,0 +1,6 @@
+[
+  {
+    "role": "user",
+    "content": "list files in current directory"
+  }
+]
